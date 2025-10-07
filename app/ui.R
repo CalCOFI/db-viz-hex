@@ -1,5 +1,5 @@
-ui <- page_sidebar(
-  title = "CalCOFI Larva App",
+ui <- page_navbar(
+  title = "CalCOFI App",
 
   useBusyIndicators(spinners = TRUE, fade = TRUE),
 
@@ -9,8 +9,6 @@ ui <- page_sidebar(
 
     # Action buttons
     actionButton("sel_data", "Data Selection", width = "100%", class = "mb-2"),
-    downloadButton("download_sp", "Download Species Data", class = "btn-secondary mb-2", style = "width: 100%;"),
-    downloadButton("download_ocean", "Download Ocean Data", class = "btn-secondary mb-2", style = "width: 100%;"),
 
     # Conditional panels for tab-specific controls
     conditionalPanel(
@@ -40,30 +38,41 @@ ui <- page_sidebar(
   ),
 
   # Main content area ----
-  navset_card_underline(
-    id = "outputPanel",
-    height = "100%",
+  nav_panel(
+    "Main",
+    navset_card_underline(
+      id = "outputPanel",
+      height = "100%",
 
-    nav_spacer(),
+      nav_panel(
+        "Download Data",
+        downloadButton("download_sp", "Download Species Data", class = "btn-secondary mb-2", style = "width: 100%;"),
+        downloadButton("download_ocean", "Download Ocean Data", class = "btn-secondary mb-2", style = "width: 100%;")
+      ),
 
-    nav_panel(
-      "Map",
-      uiOutput("map_content")
+      nav_spacer(),
+
+      nav_panel(
+        "Map",
+        uiOutput("map_content")
+      ),
+
+      nav_panel(
+        "Time Series",
+        uiOutput("ts_content")
+      ),
+
+      nav_panel(
+        "Scatterplot",
+        uiOutput("splot_content")
+      ),
+
+      nav_panel(
+        "Depth Profile",
+        uiOutput("dprof_content")
+      )
     ),
+  ),
 
-    nav_panel(
-      "Time Series",
-      uiOutput("ts_content")
-    ),
-
-    nav_panel(
-      "Scatterplot",
-      uiOutput("splot_content")
-    ),
-
-    nav_panel(
-      "Depth Profile",
-      uiOutput("dprof_content")
-    )
-  )
+  nav_panel("About", "Information")
 )

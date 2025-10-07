@@ -110,8 +110,10 @@ server <- function(input, output, session) {
           "ST_Within(ST_Point(longitude, latitude), ST_GeomFromText('", polygon_wkt, "'))"
         )))
 
-      ocean_sf <- st_as_sf(ocean_data, coords = c("Lon_Dec", "Lat_Dec"), crs = 4326)
-      ocean_data <- ocean_data[as.vector(st_intersects(ocean_sf, drawn_polygon, sparse = FALSE)), ]
+      ocean_data <- ocean_data |>
+        filter(sql(paste0(
+          "ST_Within(ST_Point(lon_dec, lat_dec), ST_GeomFromTExt('", polygon_wkt, "'))"
+        )))
     }
 
     # Validate data
@@ -159,13 +161,13 @@ server <- function(input, output, session) {
     })
 
     # Generate scatterplot
-    splot_data <- splot_prep(sp_data, ocean_data, "mean")
+    splot_data <- splot_prep(sp_data, ocean_data, "mean") |> collect()
     splot_data_shared(splot_data)
 
     output$splot <- renderPlotly({
       plot_ly(
         data = splot_data,
-        x = ~Qty,
+        x = ~qty,
         y = ~std_tally,
         color = ~name,
         type = "scattergl",
@@ -177,7 +179,7 @@ server <- function(input, output, session) {
         text = ~paste0(
           "<b>Date:</b> ", time_start,
           "<br><b>Species:</b> ", name,
-          "<br><b>", ocean_var_label_shared(), ":</b> ", round(Qty, 2),
+          "<br><b>", ocean_var_label_shared(), ":</b> ", round(qty, 2),
           "<br><b>Abundance:</b> ", round(std_tally, 2)
         )
       ) |>
@@ -205,7 +207,7 @@ server <- function(input, output, session) {
     click_data <- event_data("plotly_click", source = "scatterPlotSource")
     req(click_data, splot_data_shared())
 
-    clicked_point <- splot_data_shared()[click_data$customdata]
+    clicked_point <- splot_data_shared()[click_data$customdata,]
 
     showModal(modalDialog(
       title = "Location of Selected Point",
@@ -224,7 +226,7 @@ server <- function(input, output, session) {
           popup = paste0(
             "<b>Date:</b> ", clicked_point$time_start,
             "<br><b>Species:</b> ", clicked_point$name,
-            "<br><b>", ocean_var_label_shared(), ":</b> ", round(clicked_point$Qty, 2),
+            "<br><b>", ocean_var_label_shared(), ":</b> ", round(clicked_point$qty, 2),
             "<br><b>Abundance:</b> ", round(clicked_point$std_tally, 2)
           )
         )
@@ -235,7 +237,7 @@ server <- function(input, output, session) {
     selected_data <- event_data("plotly_selected", source = "scatterPlotSource")
     req(selected_data, splot_data_shared())
 
-    selected_points <- splot_data_shared()[selected_data$customdata]
+    selected_points <- splot_data_shared()[selected_data$customdata,]
 
     if (nrow(selected_points) == 0) {
       showNotification("No points located within selection.", type = "warning")
@@ -259,7 +261,7 @@ server <- function(input, output, session) {
           popup = paste0(
             "<b>Date:</b> ", selected_points$time_start,
             "<br><b>Species:</b> ", selected_points$name,
-            "<br><b>", ocean_var_label_shared(), ":</b> ", round(selected_points$Qty, 2),
+            "<br><b>", ocean_var_label_shared(), ":</b> ", round(selected_points$qty, 2),
             "<br><b>Abundance:</b> ", round(selected_points$std_tally, 2)
           )
         )
@@ -306,23 +308,24 @@ server <- function(input, output, session) {
     buffer_res <- create_buffer(coords, buffer_dist = input$modal_buffer_dist * 1000)
 
     sp_sf <- st_as_sf(as.data.table(sp_data_shared()), coords = c("longitude", "latitude"), crs = 4326)
-    ocean_sf <- st_as_sf(ocean_data_shared(), coords = c("Lon_Dec", "Lat_Dec"), crs = 4326)
+    ocean_sf <- st_as_sf(as.data.table(ocean_data_shared()), coords = c("lon_dec", "lat_dec"), crs = 4326)
 
-    filt_sp_sf <- sp_sf[as.vector(st_intersects(sp_sf, buffer_res$buffer, sparse = FALSE)),]
+    filt_sp_sf   <- sp_sf[as.vector(st_intersects(sp_sf, buffer_res$buffer, sparse = FALSE)),]
     filt_sp_data <- as.data.table(sp_data_shared())[as.vector(st_intersects(sp_sf, buffer_res$buffer, sparse = FALSE)),]
-    filt_ocean_data <- ocean_data_shared()[as.vector(st_intersects(ocean_sf, buffer_res$buffer, sparse = FALSE)),]
+    filt_ocean_sf   <- ocean_sf[as.vector(st_intersects(ocean_sf, buffer_res$buffer, sparse = FALSE)),]
+    filt_ocean_data <- as.data.table(ocean_data_shared())[as.vector(st_intersects(ocean_sf, buffer_res$buffer, sparse = FALSE)),]
 
     segment_sfc <- st_geometry(buffer_res$segment_utm)
     filt_sp_data[, distance := st_line_project(segment_sfc, st_transform(filt_sp_sf, buffer_res$utm_crs) |> st_geometry()) / 1000]
-    filt_ocean_data[, distance := st_line_project(segment_sfc, st_transform(st_as_sf(filt_ocean_data, coords = c("Lon_Dec", "Lat_Dec"), crs = 4326), buffer_res$utm_crs) |> st_geometry()) / 1000]
+    filt_ocean_data[, distance := st_line_project(segment_sfc, st_transform(st_as_sf(filt_ocean_data, coords = c("lon_dec", "lat_dec"), crs = 4326), buffer_res$utm_crs) |> st_geometry()) / 1000]
 
     segment_length <- st_length(buffer_res$segment_utm) / 1000
 
     profile_plot <- subplot(
       plot_ly(filt_sp_data, x = ~distance, y = ~std_tally, type = "scattergl", mode = "markers", showlegend = FALSE) |>
         layout(yaxis = list(title = "Species Abundance")),
-      plot_ly(filt_ocean_data, x = ~distance, y = ~Depthm, type = "scattergl", mode = "markers",
-              marker = list(color = ~Qty, colorbar = list(title = ocean_var_label_shared())), showlegend = FALSE) |>
+      plot_ly(filt_ocean_data, x = ~distance, y = ~depthm, type = "scattergl", mode = "markers",
+              marker = list(color = ~qty, colorbar = list(title = ocean_var_label_shared())), showlegend = FALSE) |>
         layout(xaxis = list(title = "Distance (km)", range = c(0, segment_length)),
                yaxis = list(title = "Depth (m)", autorange = "reversed")),
       nrows = 2, shareX = TRUE, heights = c(0.33, 0.67)

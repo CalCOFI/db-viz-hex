@@ -16,7 +16,7 @@ librarian::shelf(
 # variables ----
 url_db       <- "https://file.calcofi.io/data/calcofi.duckdb"
 use_local_db <- T # set to FALSE to use remote database, eg for ShinyApps.io
-hex_geo      <- here("data/hex.geojson")
+# hex_geo      <- here("data/hex.geojson")
 
 # field name issues? check these name remapping files:
 # bottle, cast: https://github.com/CalCOFI/calcofi4db/blob/main/inst/ingest/calcofi.org/bottle-database/flds_rename.csv
@@ -27,6 +27,8 @@ if (use_local_db){
   if (!file.exists(local_db))
     download.file(url_db, local_db)
   con <- dbConnect(duckdb(), dbdir = local_db)
+  dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
+  dbExecute(con, "INSTALL spatial; LOAD spatial;")
 } else {
   tmp_dk       <- here("data/tmp.duckdb")
   con <- dbConnect(duckdb(), dbdir = tmp_dk)
@@ -40,7 +42,7 @@ if (use_local_db){
 # dbListTables(con) |> sort()
 
 # load hexagons
-if (!file.exists(hex_geo)){
+if (FALSE){ # !file.exists(hex_geo)
   hex_list <- list()
 
   hex_pfx <- "hex_h3res"
@@ -76,7 +78,7 @@ if (!file.exists(hex_geo)){
   sf_hex <- bind_rows(hex_list)
   st_write(sf_hex, hex_geo, delete_dsn = T, quiet = T)
 }
-sf_hex <- st_read(hex_geo)
+# sf_hex <- st_read(hex_geo)
 
 # Load data files ----
 

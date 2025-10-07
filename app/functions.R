@@ -222,12 +222,13 @@ ocean_retrieve <- function(ocean_var, qtr, date_range, min_depth, max_depth) {
       quarter %in% qtr) |>
     select(
       date,
+      time,
       depthm,
       lat_dec,
       lon_dec,
       qty,
-      starts_with("hex_h3res") ) |>
-    collect()
+      starts_with("hex_h3res") )
+
   # TODO: consider summarizing by hex_h3res and filter by h3res
 
   return(ocean_data)
@@ -250,7 +251,7 @@ map_sp_hex <- function(sp_data, res_range) {
     reduce(union_all)
 
   # aggregate and convert to hex geometries
-  hex_sp <- combined_res_tbl |>
+  sp_hex_list <- combined_res_tbl |>
     group_by(resolution, hex_int) |>
     summarize(
       sp.value = mean(std_tally, na.rm = TRUE),
@@ -267,35 +268,43 @@ map_sp_hex <- function(sp_data, res_range) {
     st_as_sf(wkt = "hex_wkt", crs = 4326) |>
     group_split(resolution)
 
-  return(hex_sp)
+  return(sp_hex_list)
 }
 
 map_ocean_hex <- function(ocean_data, res_range, ocean_stat) {
-  # define the columns to melt
-  h3_cols <- paste0("hex_h3_res", res_range)
 
-  # melt the data.table from wide to long format
-  ocean_long_dt <- melt(ocean_data,
-                        id.vars = "Qty",
-                        measure.vars = h3_cols,
-                        variable.name = "resolution",
-                        value.name = "hex_id")
+  # precompute and store joins in a temporary table
+  ocean_data_temp <- ocean_data |>
+    compute()
 
-  # tidy up the resolution column
-  ocean_hex <- ocean_long_dt[, resolution := as.integer(gsub("hex_h3_res", "", resolution))
-                # perform aggregation
-                ][!is.na(hex_id),
-                  .(ocean.value = get(ocean_stat)(Qty, na.rm = TRUE)),
-                  by = .(resolution, hex_id)
-                  # add geometries
-                  ][hex_geo_dt, on = .(hex_id), geometry := geometry
-                    # add tooltip text
-                    ][, tooltip := round(ocean.value, 2)]
+  # create and combine tables for each resolution
+  combined_res_tbl <- map(res_range, ~{
+    hex_fld <- glue("hex_h3res{.x}")
 
-  ocean_hex <- st_sf(ocean_hex)
+    ocean_data_temp |>
+      select(hex_int = all_of(hex_fld), qty) |>
+      mutate(resolution = .x)
+  }) |>
+    reduce(union_all)
 
-  # split into list
-  ocean_hex_list <- group_split(ocean_hex, resolution)
+  # aggregate and convert to hex geometries
+  ocean_hex_list <- combined_res_tbl |>
+    group_by(resolution, hex_int) |>
+    summarize(
+      qty = (!!sym(ocean_stat))(qty, na.rm = TRUE),
+      .groups = "drop") |>
+    rename(
+      ocean.value = "qty") |>
+    filter(!is.na(hex_int)) |>
+    mutate(hex_id = sql("HEX(hex_int)")) |>
+    mutate(
+      hex_wkt = sql("h3_cell_to_boundary_wkt(hex_id)"),
+      tooltip = round(ocean.value, 2)
+    ) |>
+    select(resolution, hexid = hex_id, ocean.value, hex_wkt, tooltip) |>
+    collect() |>
+    st_as_sf(wkt = "hex_wkt", crs = 4326) |>
+    group_split(resolution)
 
   return(ocean_hex_list)
 }
@@ -356,16 +365,16 @@ create_ocean_map <- function(ocean_hex_list, ocean_scale_list, ocean_stat_label,
   return(ocean_map)
 }
 
-# helper function for species time-series conversion
-sp_time_mutate_expr <- function(ts_res) {
+# helper function for species conversion
+time_mutate_expr <- function(ts_res, time_col) {
   switch(ts_res,
-         "year"    = expr(sql("datetrunc('year', time_start)")),
-         "quarter" = expr(sql("make_date(2000, month(datetrunc('quarter',time_start)), day(datetrunc('quarter',time_start)))")),
-         "month"   = expr(sql("extract('month' FROM time_start)")),
-         "day"     = expr(sql("extract('doy' FROM time_start)")),
-         "year_quarter" = expr(sql("datetrunc('quarter',time_start)")),
-         "year_month" = expr(sql("datetrunc('month',time_start)")),
-         "year_day" = expr(sql("datetrunc('day',time_start)"))
+         "year"    = expr(sql(!!glue("datetrunc('year', {time_col})"))),
+         "quarter" = expr(sql(!!glue("make_date(2000, month(datetrunc('quarter',{time_col})), day(datetrunc('quarter',{time_col})))"))),
+         "month"   = expr(sql(!!glue("extract('month' FROM {time_col})"))),
+         "day"     = expr(sql(!!glue("extract('doy' FROM {time_col})"))),
+         "year_quarter" = expr(sql(!!glue("datetrunc('quarter',{time_col})"))),
+         "year_month" = expr(sql(!!glue("datetrunc('month',{time_col})"))),
+         "year_day" = expr(sql(!!glue("datetrunc('day',{time_col})")))
   )
 }
 
@@ -374,20 +383,17 @@ make_sp_ts <- function(sp_data, ts_res) {
 
   sp_ts_data <- sp_data |>
     mutate(
-      time = !!sp_time_mutate_expr(ts_res)
-    ) |>
+      time = !!time_mutate_expr(ts_res, "time_start")) |>
     group_by(time, name) |>
     summarize(
       avg = mean(std_tally, na.rm = TRUE),
       std = sd(std_tally, na.rm = TRUE),
       n = n(),
-      .groups = "drop"
-    ) |>
+      .groups = "drop") |>
     mutate(
       upr = avg + std/n,
       lwr = avg - std/n,
-      std = std/n
-    ) |>
+      std = std/n) |>
     collect()
 
   # Add rows to wrap dates for seasonal plot
@@ -396,39 +402,29 @@ make_sp_ts <- function(sp_data, ts_res) {
       bind_rows(
         sp_ts_data |>
           filter(
-            time == as.Date("2000-01-01")
-          ) |>
+            time == as.Date("2000-01-01")) |>
           mutate(
-            time = time + 366
-          )
-      )
+            time = time + 366))
   }
 
   return(sp_ts_data)
 }
 
-# helper function for oceanographic time-series conversion
-ocean_time_mutate_expr <- function(ts_res) {
-  switch(ts_res,
-         "year"    = expr(floor_date(datetime, "year")),
-         "quarter" = expr(`year<-`(floor_date(datetime, "quarter"), 2000)),
-         "month"   = expr(month(datetime)),
-         "day"     = expr(yday(datetime)),
-         "year_quarter" = expr(floor_date(datetime, "quarter")),
-         "year_month" = expr(floor_date(datetime, "month")),
-         "year_day" = expr(floor_date(datetime, "day"))
-  )
-}
-
 # oceanographic time-series conversion function
 make_ocean_ts <- function(ocean_data, ts_res) {
-  ocean_ts_data <- ocean_data[, time := eval(ocean_time_mutate_expr(ts_res))
-                              # calculate average and standard deviation
-                              ][, .(avg = mean(Qty, na.rm = TRUE),
-                                    std = sd(Qty, na.rm = TRUE)/.N), by = .(time)
-                                # create upper and lower bounds
-                                ][, `:=`(upr = avg + std, lwr = avg - std)
-                                  ][, .(time, avg, lwr, upr, std)]
+
+  ocean_ts_data <- ocean_data |>
+    mutate(
+      time = !!time_mutate_expr(ts_res, "date")) |>
+    group_by(time) |>
+    summarize(
+      avg = mean(qty, na.rm = TRUE),
+      std = sd(qty, na.rm = TRUE)/n()) |>
+    mutate(
+      upr = avg + std,
+      lwr = avg - std) |>
+    select(time, avg, std, lwr, upr) |>
+    collect()
 
   # Add rows to wrap dates for seasonal plot
   if (ts_res == "quarter") {
@@ -436,12 +432,9 @@ make_ocean_ts <- function(ocean_data, ts_res) {
       bind_rows(
         ocean_ts_data |>
           filter(
-            time == as.POSIXct("2000-01-01", tz="UTC")
-          ) |>
+            time == as.Date("2000-01-01")) |>
           mutate(
-            time = as.POSIXct("2001-01-01", tz="UTC")
-          )
-      )
+            time = time + 366))
   }
 
   return(ocean_ts_data)
@@ -608,42 +601,45 @@ plot_ts <- function(sp_ts, ocean_ts, ts_res, sel_ocean_var) {
 }
 
 # data prep function for scatterplot
-splot_prep <- function(sp_data, ocean_data, ocean_stat, dist_within = 1000) {
-  # convert species data to a data.table
-  sp_dt <- sp_data |>
-    as.data.table()
+splot_prep <- function(sp_data, ocean_data, ocean_stat,
+                       time_within = 1, dist_within = 1000) {
 
-  # subset columns and convert time to Date format
-  sp_dt <- sp_dt[, c("name", "std_tally", "time_start", "longitude", "latitude")][
-    , time_start := as.Date(time_start)
-  ]
-  ocean_dt <- ocean_data[, c("datetime", "Qty", "Depthm", "Lat_Dec", "Lon_Dec")][
-    , datetime := as.Date(datetime)
-  ]
+  # time_within: hours
+  # dist_within: meters
 
-  # join data by date
-  joined_by_time <- sp_dt[ocean_dt,
-                          on = .(time_start = datetime),
-                          allow.cartesian = TRUE, # Necessary for one-to-many matches
-                          nomatch = 0 # Ensures we only keep rows that have a match
-  ]
+  sp_data_temp <- sp_data |>
+    select(
+      name, std_tally, time_start, longitude, latitude)
 
-  # rename columns for clarity after the join
-  setnames(joined_by_time, c("longitude", "latitude"),
-           c("sp_lon", "sp_lat"))
-  setnames(joined_by_time, c("Lon_Dec", "Lat_Dec"),
-           c("ocean_lon", "ocean_lat"))
+  ocean_data_temp <- ocean_data |>
+    select(
+      date, time, qty, depthm, lat_dec, lon_dec) |>
+    mutate(
+      datetime = as.POSIXct((paste(date, time)))) |>
+    mutate(
+      datetime_upr = sql(paste("datetime + INTERVAL", time_within, "HOUR")),
+      datetime_lwr = sql(paste("datetime - INTERVAL", time_within, "HOUR")))
 
-  # compute distances
-  joined_by_time[, distance_m := distHaversine(
-    p1 = cbind(sp_lon, sp_lat),
-    p2 = cbind(ocean_lon, ocean_lat)
-  )]
-
-  # filter based on distance and aggregate
-  splot_data <- joined_by_time[distance_m <= dist_within, .(Qty = get(ocean_stat)(Qty, na.rm = TRUE)),
-                               by = .(name, std_tally, time_start, sp_lon, sp_lat)
-  ]
+  splot_data <- left_join(
+    sp_data_temp, ocean_data_temp,
+    # join species to ocean observations within desired time interval
+    by = join_by(between(time_start, datetime_lwr, datetime_upr))) |>
+  rename(
+    sp_lon   = "longitude",
+    sp_lat    = "latitude",
+    ocean_lon = "lon_dec",
+    ocean_lat = "lat_dec") |>
+  # compute distance between species and ocean observations
+  mutate(
+    distance_m = sql("ST_Distance_Sphere(ST_Point(sp_lon,sp_lat),ST_Point(ocean_lon,ocean_lat))")) |>
+  # get pairs within desired distance
+  filter(
+    distance_m <= dist_within) |>
+  group_by(
+    name, std_tally, time_start, sp_lon, sp_lat) |>
+  # summarize ocean observations for each individual species observation
+  summarize(
+    qty = (!!sym(ocean_stat))(qty, na.rm = TRUE))
 
   return(splot_data)
 }
