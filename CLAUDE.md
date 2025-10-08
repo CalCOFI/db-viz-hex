@@ -91,8 +91,8 @@ rx <- reactiveValues(
 # Function names
 get_sp()           # retrieve species data (formerly sp_retrieve)
 get_env()          # retrieve environmental data (formerly ocean_retrieve)
-map_sp_hex()       # aggregate species to hexagons (unchanged)
-map_env_hex()      # aggregate environment to hexagons (formerly map_ocean_hex)
+join_sp_hex()      # join species to hexagons (unchanged)
+join_env_hex()     # join environment to hexagons (formerly map_ocean_hex)
 map_sp()           # create species map (formerly create_sp_map)
 map_env()          # create environment map (formerly create_ocean_map)
 plot_ts()          # create time series plot (unchanged)

@@ -4,7 +4,7 @@ ui <- page_sidebar(
   useConductor(),
   useBusyIndicators(spinners = TRUE, fade = TRUE),
 
-  # Sidebar ----
+  # sidebar ----
   sidebar = sidebar(
     width = 300,
 
@@ -33,7 +33,7 @@ ui <- page_sidebar(
     # Filter summary accordion
     uiOutput("filter_summary") ),
 
-  # Main content area ----
+  # main content ----
   navset_card_underline(
     id = "outputPanel",
     height = "100%",

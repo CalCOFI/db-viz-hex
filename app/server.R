@@ -7,7 +7,8 @@ server <- function(input, output, session) {
   rx <- reactiveValues(
     df_sp          = NULL,
     df_env         = NULL,
-    lbl_env_var    = NULL,
+    env_var        = NULL,  # stores the env_var code (e.g., "t_deg_c")
+    lbl_env_var    = NULL,  # stores the label (e.g., "Temperature (ºC)")
     map_sp         = NULL,
     df_splot       = NULL,
     filter_summary = NULL,
@@ -16,7 +17,7 @@ server <- function(input, output, session) {
   # default data initialization ----
   observeEvent(session$clientData, once = TRUE, {
     tryCatch({
-      if (debug) cat("\n=== LOADING DEFAULT DATA ===\n")
+      if (debug) message("\n=== LOADING DEFAULT DATA ===")
 
       # default selections
       sel_name        <- default_sp_name
@@ -25,7 +26,7 @@ server <- function(input, output, session) {
       sel_date_range  <- min_max_date
       sel_depth_range <- c(0, 212)
 
-      if (debug) cat("Loading default species:", sel_name, "\n")
+      if (debug) message("Loading default species: ", sel_name)
 
     # retrieve data (lazy tables from database)
     df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range)
@@ -33,20 +34,21 @@ server <- function(input, output, session) {
 
     # validate data
     n_sp <- df_sp |> summarize(n = n()) |> pull(n)
-    if (debug) cat("Default species data: found", n_sp, "rows\n")
+    if (debug) message("Default species data: found", n_sp, "rows\n")
 
     if (n_sp == 0) {
-      if (debug) cat("WARNING: No data found for default species\n")
+      if (debug) message("WARNING: No data found for default species\n")
       return(NULL)
     }
 
     # store shared data
     rx$df_sp       <- df_sp
     rx$df_env      <- df_env
+    rx$env_var     <- sel_env_var
     rx$lbl_env_var <- names(which(env_var_choices == sel_env_var))
 
     # build filter summary
-    rx$filter_summary <- build_filter_summary(
+    rx$filter_summary <- prep_filter_summary(
       sel_name,
       sel_env_var,
       sel_qtr,
@@ -55,8 +57,8 @@ server <- function(input, output, session) {
       drawn_polygon = NULL)
 
     # generate species map
-    if (debug) cat("Generating default species map...\n")
-    sp_hex_list   <- map_sp_hex(df_sp, res_range)
+    if (debug) message("Generating default species map...\n")
+    sp_hex_list   <- prep_sp_hex(df_sp, res_range)
     sp_scale_list <- lapply(
       sp_hex_list,
       interpolate_palette,
@@ -64,58 +66,18 @@ server <- function(input, output, session) {
       palette = \(n) hcl.colors(n, palette = "Viridis"))
     map_sp_obj <- map_sp(sp_hex_list, sp_scale_list)
     rx$map_sp <- map_sp_obj
-    if (debug) cat("Default species map generated and stored in rx$map_sp\n")
+    if (debug) message("Default species map generated and stored in rx$map_sp\n")
 
-    # generate time series
-    output$ts_plot <- renderHighchart({
-      ts_res <- input$sel_ts_res %||% "year"
-      sp_ts  <- build_ts_sp(df_sp, ts_res) |> arrange(time)
-      env_ts <- build_ts_env(df_env, ts_res)
-      plot_ts(sp_ts, env_ts, ts_res, sel_env_var)
-    })
-
-    # generate scatterplot
-    df_splot <- prep_scatter(df_sp, df_env, "mean")
+    # prepare scatterplot data
+    df_splot <- prep_splot(df_sp, df_env, "mean")
     rx$df_splot <- df_splot
 
-    output$splot <- renderPlotly({
-      plot_ly(
-        data       = df_splot,
-        x          = ~env_qty,
-        y          = ~sp_tally,
-        color      = ~sp_name,
-        type       = "scattergl",
-        mode       = "markers",
-        marker     = list(size = 10, opacity = 0.8),
-        customdata = ~1:nrow(df_splot),
-        source     = "scatterPlotSource",
-        hoverinfo  = "text",
-        text       = ~paste0(
-          "<b>Date:</b> ", sp_dtime,
-          "<br><b>Species:</b> ", sp_name,
-          "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
-          "<br><b>Abundance:</b> ", round(sp_tally, 2)
-        )
-      ) |>
-        layout(
-          xaxis  = list(title = rx$lbl_env_var),
-          yaxis  = list(title = "Species Abundance"),
-          legend = list(title = "Species"),
-          dragmode = "select"
-        ) |>
-        config(
-          displaylogo = FALSE,
-          scrollZoom = TRUE,
-          modeBarButtonsToRemove = c("hoverClosestCartesian", "hoverCompareCartesian")
-        )
-    })
+    # reset depth profile
+    rx$plot_depth <- NULL
 
-      # reset depth profile
-      rx$plot_depth <- NULL
-
-      if (debug) cat("=== DEFAULT DATA LOADED ===\n\n")
+      if (debug) message("=== DEFAULT DATA LOADED ===\n\n")
     }, error = function(e) {
-      cat("ERROR in default data initialization:", conditionMessage(e), "\n")
+      message("ERROR in default data initialization: ", conditionMessage(e))
       traceback()
     })
   })
@@ -123,7 +85,7 @@ server <- function(input, output, session) {
   # map content ----
   output$map_content <- renderUI({
     if (is.null(rx$df_sp)) {
-      placeholder_message(
+      ui_placeholder(
         "No Data Selected",
         "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
       )
@@ -138,7 +100,7 @@ server <- function(input, output, session) {
   # time series content ----
   output$ts_content <- renderUI({
     if (is.null(rx$df_sp)) {
-      placeholder_message(
+      ui_placeholder(
         "No Data Selected",
         "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
       )
@@ -150,7 +112,7 @@ server <- function(input, output, session) {
   # scatterplot content ----
   output$splot_content <- renderUI({
     if (is.null(rx$df_sp)) {
-      placeholder_message(
+      ui_placeholder(
         "No Data Selected",
         "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
       )
@@ -162,12 +124,12 @@ server <- function(input, output, session) {
   # depth profile content ----
   output$dprof_content <- renderUI({
     if (is.null(rx$df_sp)) {
-      placeholder_message(
+      ui_placeholder(
         "No Data Selected",
         "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
       )
     } else if (is.null(rx$plot_depth)) {
-      placeholder_message(
+      ui_placeholder(
         "No Depth Profile Generated",
         "Click 'Draw Transect' in the sidebar to create a depth profile."
       )
@@ -180,11 +142,11 @@ server <- function(input, output, session) {
   output$map <- renderMaplibreCompare({
     req(rx$df_env, rx$map_sp)
 
-    if (debug) cat("renderMaplibreCompare: generating environmental map...\n")
+    if (debug) message("renderMaplibreCompare: generating environmental map...\n")
 
     env_stat <- input$sel_env_stat %||% "mean"
     env_stat_label <- names(which(env_stat_choices == env_stat))
-    env_hex_list   <- map_env_hex(rx$df_env, res_range, env_stat)
+    env_hex_list   <- prep_env_hex(rx$df_env, res_range, env_stat)
     env_scale_list <- lapply(
       env_hex_list,
       interpolate_palette,
@@ -197,17 +159,67 @@ server <- function(input, output, session) {
       rx$lbl_env_var)
 
     if (debug) {
-      cat("renderMaplibreCompare: creating comparison map\n")
-      cat("rx$map_sp class:", class(rx$map_sp), "\n")
-      cat("map_env_obj class:", class(map_env_obj), "\n")
+      message("renderMaplibreCompare: creating comparison map")
+      message("rx$map_sp class: ", paste(class(rx$map_sp), collapse = ", "))
+      message("map_env_obj class: ", paste(class(map_env_obj), collapse = ", "))
     }
 
     compare(rx$map_sp, map_env_obj, elementId = "map")
   })
 
+  # time series rendering ----
+  output$ts_plot <- renderHighchart({
+    req(rx$df_sp, rx$df_env, rx$env_var)
+
+    if (debug) message("renderHighchart: generating time series plot\n")
+
+    ts_res <- input$sel_ts_res %||% "year"
+    sp_ts  <- prep_ts_sp(rx$df_sp, ts_res) |> arrange(time)
+    env_ts <- prep_ts_env(rx$df_env, ts_res)
+
+    plot_ts(sp_ts, env_ts, ts_res, rx$env_var)
+  })
+
+  # scatterplot rendering ----
+  output$splot <- renderPlotly({
+    req(rx$df_splot)
+
+    if (debug) message("renderPlotly: generating scatterplot\n")
+
+    plot_ly(
+      data       = rx$df_splot,
+      x          = ~env_qty,
+      y          = ~sp_tally,
+      color      = ~sp_name,
+      type       = "scattergl",
+      mode       = "markers",
+      marker     = list(size = 10, opacity = 0.8),
+      customdata = ~1:nrow(rx$df_splot),
+      source     = "scatterPlotSource",
+      hoverinfo  = "text",
+      text       = ~paste0(
+        "<b>Date:</b> ", sp_dtime,
+        "<br><b>Species:</b> ", sp_name,
+        "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
+        "<br><b>Abundance:</b> ", round(sp_tally, 2)
+      )
+    ) |>
+      layout(
+        xaxis    = list(title = rx$lbl_env_var),
+        yaxis    = list(title = "Species Abundance"),
+        legend   = list(title = "Species"),
+        dragmode = "select"
+      ) |>
+      config(
+        displaylogo            = FALSE,
+        scrollZoom             = TRUE,
+        modeBarButtonsToRemove = c("hoverClosestCartesian", "hoverCompareCartesian")
+      )
+  })
+
   # data selection modal ----
   observeEvent(input$sel_data, {
-    showModal(dataModal())
+    showModal(modal_data())
     updateSelectizeInput(session, 'sel_name', choices = sp_names, server = TRUE)
 
     output$spatial_filter_map <- renderMaplibre({
@@ -226,7 +238,7 @@ server <- function(input, output, session) {
 
   # submit data selection ----
   observeEvent(input$submit, {
-    if (debug) cat("\n=== DATA SELECTION SUBMITTED ===\n")
+    if (debug) message("\n=== DATA SELECTION SUBMITTED ===\n")
 
     # collect input selections
     sel_name        <- input$sel_name
@@ -235,11 +247,11 @@ server <- function(input, output, session) {
     sel_date_range  <- input$sel_date_range
     sel_depth_range <- input$sel_depth_range
 
-    if (debug) cat("Selections: sp_name =", sel_name, ", env_var =", sel_env_var, "\n")
+    if (debug) message("Selections: sp_name =", sel_name, ", env_var =", sel_env_var)
 
     # get spatial filter
     drawn_polygon <- get_drawn_features(maplibre_proxy("spatial_filter_map"))
-    if (debug) cat("Spatial filter:", if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) "custom polygon" else "none", "\n")
+    if (debug) message("Spatial filter:", if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) "custom polygon" else "none")
 
     # retrieve data (lazy tables from database)
     df_sp <- get_sp(sel_name, sel_qtr, sel_date_range)
@@ -265,22 +277,23 @@ server <- function(input, output, session) {
 
     # validate data (only collect count, not full data)
     n_sp <- df_sp |> summarize(n = n()) |> pull(n)
-    if (debug) cat("Species data: found", n_sp, "rows\n")
+    if (debug) message("Species data: found", n_sp, "rows\n")
 
     if (n_sp == 0) {
       showNotification("No observations found for selected species.", type = "warning")
-      showModal(dataModal())
+      showModal(modal_data())
       return(NULL)
     }
 
     # store shared data (still lazy tables)
-    rx$df_sp      <- df_sp
-    rx$df_env     <- df_env
+    rx$df_sp       <- df_sp
+    rx$df_env      <- df_env
+    rx$env_var     <- sel_env_var
     rx$lbl_env_var <- names(which(env_var_choices == sel_env_var))
-    if (debug) cat("Stored reactive data: df_sp, df_env, lbl_env_var =", rx$lbl_env_var, "\n")
+    if (debug) message("Stored reactive data: df_sp, df_env, lbl_env_var =", rx$lbl_env_var)
 
     # build filter summary
-    rx$filter_summary <- build_filter_summary(
+    rx$filter_summary <- prep_filter_summary(
       sel_name,
       sel_env_var,
       sel_qtr,
@@ -289,8 +302,8 @@ server <- function(input, output, session) {
       drawn_polygon)
 
     # generate map
-    if (debug) cat("Generating species map...\n")
-    sp_hex_list   <- map_sp_hex(df_sp, res_range)
+    if (debug) message("Generating species map...\n")
+    sp_hex_list   <- prep_sp_hex(df_sp, res_range)
     sp_scale_list <- lapply(
       sp_hex_list,
       interpolate_palette,
@@ -298,46 +311,11 @@ server <- function(input, output, session) {
       palette = \(n) hcl.colors(n, palette = "Viridis"))
     map_sp_obj <- map_sp(sp_hex_list, sp_scale_list)
     rx$map_sp <- map_sp_obj
-    if (debug) cat("Species map generated and stored in rx$map_sp\n")
+    if (debug) message("Species map generated and stored in rx$map_sp\n")
 
-    # generate time series
-    output$ts_plot <- renderHighchart({
-      sp_ts  <- build_ts_sp(df_sp, input$sel_ts_res) |> arrange(time)
-      env_ts <- build_ts_env(df_env, input$sel_ts_res)
-      plot_ts(sp_ts, env_ts, input$sel_ts_res, sel_env_var)
-    })
-
-    # generate scatterplot
-    df_splot <- prep_scatter(df_sp, df_env, "mean")
+    # prepare scatterplot data
+    df_splot <- prep_splot(df_sp, df_env, "mean")
     rx$df_splot <- df_splot
-
-    output$splot <- renderPlotly({
-      plot_ly(
-        data       = df_splot,
-        x          = ~env_qty,
-        y          = ~sp_tally,
-        color      = ~sp_name,
-        type       = "scattergl",
-        mode       = "markers",
-        marker     = list(size = 10, opacity = 0.8),
-        customdata = ~1:nrow(df_splot),
-        source     = "scatterPlotSource",
-        hoverinfo  = "text",
-        text       = ~paste0(
-          "<b>Date:</b> ", sp_dtime,
-          "<br><b>Species:</b> ", sp_name,
-          "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
-          "<br><b>Abundance:</b> ", round(sp_tally, 2))) |>
-        layout(
-          xaxis    = list(title = rx$lbl_env_var),
-          yaxis    = list(title = "Species Abundance"),
-          legend   = list(title = "Species"),
-          dragmode = "select") |>
-        config(
-          displaylogo            = FALSE,
-          scrollZoom             = TRUE,
-          modeBarButtonsToRemove = c("hoverClosestCartesian", "hoverCompareCartesian"))
-    })
 
     # reset depth profile
     rx$plot_depth <- NULL
@@ -415,7 +393,7 @@ server <- function(input, output, session) {
   observeEvent(input$open_transect_modal, {
     req(rx$map_sp)
 
-    showModal(depthProfileModal())
+    showModal(modal_depth_profile())
 
     output$transect_map <- renderMaplibre({
       rx$map_sp |>
@@ -448,7 +426,7 @@ server <- function(input, output, session) {
       coords <- coords[(nrow(coords)-1):nrow(coords), c("X", "Y")]
     }
 
-    buffer_res <- create_buffer(coords, buffer_dist = input$modal_buffer_dist * 1000)
+    buffer_res <- buffer_transect(coords, buffer_dist = input$modal_buffer_dist * 1000)
 
     # collect data for depth profile (need full data for spatial operations)
     df_sp_collected <- rx$df_sp |> collect()
