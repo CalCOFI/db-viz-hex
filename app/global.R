@@ -58,7 +58,7 @@ if (!file.exists(hex_geo)){
 
     hex_list[[hex_res]] <- tbl(con, "site") |>
       rename(
-        hex_int = .data[[hex_fld]]) |>
+        hex_int = all_of(hex_fld)) |>
       group_by(hex_int) |>
       summarize(
         n_sites = n(),
@@ -143,7 +143,8 @@ tour <- Conductor$
   step(
     title = "Welcome",
     text = "The app is initializing with a map comparing Pacific sardine larvae
-    and temperature collected on CalCOFI cruises since 1949.",
+    and temperature collected on CalCOFI cruises since 1949.<br><br>
+    (To exit tour, use keyboard esc button)",
     buttons = list(
       list(
         action = "next",
