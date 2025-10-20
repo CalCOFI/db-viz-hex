@@ -44,7 +44,7 @@ dbExecute(con, "INSTALL spatial; LOAD spatial;")
 # dbListTables(con) |> sort()
 
 # load hexagons
-if (!file.exists(hex_geo)){
+if (FALSE){ # !file.exists(hex_geo)
   hex_list <- list()
 
   hex_pfx <- "hex_h3res"

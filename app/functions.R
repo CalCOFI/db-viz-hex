@@ -419,13 +419,11 @@ prep_ts_sp <- function(df_sp, ts_res) {
       avg = mean(std_tally, na.rm = TRUE),
       std = sd(std_tally, na.rm = TRUE),
       n = n(),
-      .groups = "drop"
-    ) |>
+      .groups = "drop") |>
     mutate(
       upr = avg + std/n,
       lwr = avg - std/n,
-      std = std/n
-    ) |>
+      std = std/n) |>
     collect()
 
   # add rows to wrap dates for seasonal plot
@@ -434,12 +432,9 @@ prep_ts_sp <- function(df_sp, ts_res) {
       bind_rows(
         sp_ts_data |>
           filter(
-            time == as.Date("2000-01-01")
-          ) |>
+            time == as.Date("2000-01-01")) |>
           mutate(
-            time = time + 366
-          )
-      )
+            time = time + 366))
   }
 
   return(sp_ts_data)
