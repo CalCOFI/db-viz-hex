@@ -8,15 +8,18 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 
 # Load libraries
 librarian::shelf(
-  bslib, bsicons, DBI, data.table, dplyr, duckdb, geosphere, ggplot2, glue, here,
-  highcharter, htmlwidgets, leaflet, lubridate, mapgl, plotly, purrr, readr, sf,
+  bslib, bsicons, conductor, DBI,
+  #data.table,
+  dplyr, duckdb, geosphere, ggplot2, glue, here,
+  highcharter, htmlwidgets, leaflet, litedown, lubridate, mapgl, plotly, purrr, readr, sf,
   shiny, shinyWidgets, stringr, tibble, tidyr,
   quiet = TRUE)
 
 # variables ----
-url_db       <- "https://file.calcofi.io/data/calcofi.duckdb"
-use_local_db <- T # set to FALSE to use remote database, eg for ShinyApps.io
-# hex_geo      <- here("data/hex.geojson")
+debug        <- interactive() # set to TRUE for diagnostic console messages
+calcofi_db   <- "https://file.calcofi.io/data/calcofi.duckdb"
+use_local_db <- TRUE # set to FALSE to use remote database, eg for ShinyApps.io
+hex_geo      <- here("data/hex.geojson")
 
 # field name issues? check these name remapping files:
 # bottle, cast: https://github.com/CalCOFI/calcofi4db/blob/main/inst/ingest/calcofi.org/bottle-database/flds_rename.csv
@@ -25,20 +28,19 @@ use_local_db <- T # set to FALSE to use remote database, eg for ShinyApps.io
 if (use_local_db){
   local_db <- here("data/calcofi.duckdb")
   if (!file.exists(local_db))
-    download.file(url_db, local_db)
-  con <- dbConnect(duckdb(), dbdir = local_db)
-  dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
-  dbExecute(con, "INSTALL spatial; LOAD spatial;")
+    download.file(calcofi_db, local_db)
+  con <- dbConnect(duckdb(read_only = T, dbdir = local_db))
 } else {
-  tmp_dk       <- here("data/tmp.duckdb")
+  tmp_dk <- here("data/tmp.duckdb")
   con <- dbConnect(duckdb(), dbdir = tmp_dk)
 
-  # Load DuckDB extensions with error handling
-  dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
+  # load DuckDB extensions with error handling
   dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
-  dbExecute(con, "INSTALL spatial; LOAD spatial;")
-  dbExecute(con, glue("ATTACH IF NOT EXISTS '{url_db}' AS calcofi; USE calcofi"))
+  dbExecute(con, glue("ATTACH IF NOT EXISTS '{calcofi_db}' AS calcofi; USE calcofi"))
 }
+dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
+dbExecute(con, "INSTALL spatial; LOAD spatial;")
+
 # dbListTables(con) |> sort()
 
 # load hexagons
@@ -56,7 +58,7 @@ if (FALSE){ # !file.exists(hex_geo)
 
     hex_list[[hex_res]] <- tbl(con, "site") |>
       rename(
-        hex_int = .data[[hex_fld]]) |>
+        hex_int = all_of(hex_fld)) |>
       group_by(hex_int) |>
       summarize(
         n_sites = n(),
@@ -78,20 +80,13 @@ if (FALSE){ # !file.exists(hex_geo)
   sf_hex <- bind_rows(hex_list)
   st_write(sf_hex, hex_geo, delete_dsn = T, quiet = T)
 }
-# sf_hex <- st_read(hex_geo)
+sf_hex <- st_read(hex_geo, quiet = TRUE)
 
-# Load data files ----
-
-# ocean_subset <- fread(here("data/ocean_subset.csv"))
-# hex_geo_dt <- read_csv(here("data/hex_geo.csv"), show_col_types = FALSE) |>
-#   st_as_sf(wkt = "geometry", crs = 4326) |>
-#   as.data.table()
-
-# Load functions ----
+# load functions ----
 source(here("app/functions.R"))
 
-# Extract species names and date range ----
-names <- tbl(con, "species") |>
+# extract species names and date range ----
+sp_names <- tbl(con, "species") |>
   mutate(name = paste0(common_name, " (", scientific_name, ")")) |>
   pull(name)
 
@@ -113,24 +108,26 @@ min_max_date <- c(
   min(larva_date_rng[[1]], bottle_date_rng[[1]]),
   max(larva_date_rng[[2]], bottle_date_rng[[2]]) )
 
-# Global constants ----
+# global constants ----
+default_sp_name <- "Pacific sardine (pilchard) (Sardinops sagax)"
+
 ts_res_choices <- list(
   "Year"          = "year",
   "Quarter"       = "quarter",
-  "Year, Quarter" = "year_quarter" )
+  "Year, Quarter" = "year_quarter")
 
-ocean_var_choices <- list(
+env_var_choices <- list(
   "Temperature (ºC)" = "t_deg_c",
   "Salinity"         = "salnty",
-  "Oxygen (µmol/kg)" = "oxy_umol_kg" )
+  "Oxygen (µmol/kg)" = "oxy_umol_kg")
 
-ocean_stat_choices <- list(
-  "Average"   = "mean",
+env_stat_choices <- list(
+  "Avg."      = "mean",
   "Max"       = "max",
   "Min"       = "min",
-  "Std. Dev." = "sd" )
+  "Std. Dev." = "sd")
 
-# Mapping variables ----
+# mapping variables ----
 min_res     <- 1
 max_res     <- 10
 res_range   <- min_res:max_res
@@ -138,7 +135,36 @@ zoom_breaks <- seq(1, 13, length.out = length(res_range) + 1)
 zoom_breaks[1] <- 0
 zoom_breaks[length(zoom_breaks)] <- 22
 
-# Cleanup on exit ----
+# tour ----
+tour <- Conductor$
+  new(
+    exitOnEsc          = T,
+    keyboardNavigation = T)$
+  step(
+    title = "Welcome",
+    text = "The app is initializing with a map comparing Pacific sardine larvae
+    and temperature collected on CalCOFI cruises since 1949.<br><br>
+    (To exit tour, use keyboard esc button)",
+    buttons = list(
+      list(
+        action = "next",
+        text   = "Next" )))$
+  step(
+    el    = "#sel_data",
+    title = "Select Filters",
+    text  = "You can change the species and environmental selection here, along with
+    temporal and spatial constraints.",
+    buttons = list(
+      list(
+        action = "back",
+        text   = "Back"),
+      list(
+        action = "next",
+        text   = "Done")))
+
+# cleanup on exit ----
 onStop(function() {
-  dbDisconnect(con, shutdown = TRUE); duckdb_shutdown(duckdb()); rm(con)
+  dbDisconnect(con, shutdown = TRUE)
+  duckdb_shutdown(duckdb())
+  rm(con)
 })

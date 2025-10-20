@@ -654,6 +654,8 @@ dbWriteTable(con_cc, "taxa_rank", d_taxon_rank, overwrite = T)
 
 # TODO: ensure valid taxonID (ie == acceptedNameUsageID)
 #  like in get_taxon_parentage()
+# TODO: update to USING KEY in Recursive CTEs – DuckDB version 1.3+
+#   https://duckdb.org/2025/05/23/using-key.html
 
 # Function to get all children (descendants) of a given taxon
 get_taxon_children <- function(taxonID, con, authority = "worms") {
