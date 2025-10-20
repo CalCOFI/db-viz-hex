@@ -572,7 +572,7 @@ prep_splot <- function(df_sp, df_env, env_stat, max_hours_diff = 72, max_meters_
       env_dtime_upr = sql(glue("env_dtime + INTERVAL {max_hours_diff} HOUR")))
 
   # join by time difference
-  d_sp_env <- d_sp |>
+  d_sp_env_raw <- d_sp |>
     left_join(
       d_env,
       # join species to env observations within desired time interval
@@ -582,7 +582,10 @@ prep_splot <- function(df_sp, df_env, env_stat, max_hours_diff = 72, max_meters_
       dist_m = sql("ST_Distance_Sphere(ST_Point(sp_lon, sp_lat), ST_Point(env_lon, env_lat))")) |>
     # get pairs within desired distance
     filter(
-      dist_m <= max_meters_diff) |>
+      dist_m <= max_meters_diff)
+
+  d_sp_env <- d_sp_env_raw |>
+    # above is raw; below is summarized -> Downloads
     group_by(
       sp_name, sp_tally, sp_dtime, sp_lon, sp_lat) |>
     # summarize ocean observations for each individual species observation
