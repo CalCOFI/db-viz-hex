@@ -1,6 +1,8 @@
 ui <- page_sidebar(
   title = "CalCOFI Integrated App",
 
+  tags$head(includeHTML("google-analytics.html")),
+
   useConductor(),
   useBusyIndicators(spinners = TRUE, fade = TRUE),
 
