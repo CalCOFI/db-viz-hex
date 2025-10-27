@@ -12,7 +12,7 @@ librarian::shelf(
   #data.table,
   dplyr, duckdb, geosphere, ggplot2, glue, here,
   highcharter, htmlwidgets, leaflet, litedown, lubridate, mapgl, plotly, purrr, readr, sf,
-  shiny, shinyWidgets, stringr, tibble, tidyr,
+  shiny, shinyWidgets, stringr, thematic, tibble, tidyr,
   quiet = TRUE)
 
 # variables ----

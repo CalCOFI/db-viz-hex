@@ -1,5 +1,8 @@
 server <- function(input, output, session) {
 
+  # thematic for bslib theming ----
+  thematic::thematic_shiny()
+
   # tour ----
   if (is_tour_on)
     tour$init()$start()
@@ -201,37 +204,44 @@ server <- function(input, output, session) {
   output$splot <- renderPlotly({
     req(rx$df_splot)
 
-    if (debug) message("renderPlotly: generating scatterplot\n")
+    if (debug) message("renderPlotly: generating scatterplot with ggplotly\n")
 
-    plot_ly(
-      data       = rx$df_splot,
-      x          = ~env_qty,
-      y          = ~sp_tally,
-      color      = ~sp_name,
-      type       = "scattergl",
-      mode       = "markers",
-      marker     = list(size = 10, opacity = 0.8),
-      customdata = ~1:nrow(rx$df_splot),
-      source     = "scatterPlotSource",
-      hoverinfo  = "text",
-      text       = ~paste0(
-        "<b>Date:</b> ", sp_dtime,
-        "<br><b>Species:</b> ", sp_name,
-        "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
-        "<br><b>Abundance:</b> ", round(sp_tally, 2)
+    # prepare data with customdata and hover text for plotly
+    df_plot <- rx$df_splot |>
+      mutate(
+        customdata = 1:n(),
+        hover_text = paste0(
+          "<b>Date:</b> ", sp_dtime,
+          "<br><b>Species:</b> ", sp_name,
+          "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
+          "<br><b>Abundance:</b> ", round(sp_tally, 2)
+        )
       )
-    ) |>
-      layout(
-        xaxis    = list(title = rx$lbl_env_var),
-        yaxis    = list(title = "Species Abundance"),
-        legend   = list(title = "Species"),
-        dragmode = "select"
-      ) |>
+
+    # create ggplot (thematic will apply bslib theme automatically)
+    p <- ggplot(
+      df_plot,
+      aes(
+        x          = env_qty,
+        y          = sp_tally,
+        color      = sp_name,
+        text       = hover_text,
+        customdata = customdata) ) +
+      geom_point(size = 3, alpha = 0.8) +
+      labs(
+        x     = rx$lbl_env_var,
+        y     = "Species Abundance",
+        color = "Species") +
+      theme(legend.position="none") # +
+      # theme_minimal()
+
+    # convert to plotly with bslib theme support
+    ggplotly(p, tooltip = "text", source = "scatterPlotSource") |>
+      layout(dragmode = "select") |>
       config(
         displaylogo            = FALSE,
         scrollZoom             = TRUE,
-        modeBarButtonsToRemove = c("hoverClosestCartesian", "hoverCompareCartesian")
-      )
+        modeBarButtonsToRemove = c("hoverClosestCartesian", "hoverCompareCartesian") )
   })
 
   # sel_data -> spatial_filter_map ----
