@@ -59,6 +59,9 @@ ui <- page_sidebar(
     nav_spacer(),
 
     nav_panel(
+      input_dark_mode(id = "dark_toggle", mode = "dark")),
+
+    nav_panel(
       "Download",
       downloadButton("download_sp",  "Download Species Data",       class = "btn-secondary mb-2", style = "width: 100%;"),
       downloadButton("download_env", "Download Environmental Data", class = "btn-secondary mb-2", style = "width: 100%;") ),

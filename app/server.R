@@ -156,12 +156,14 @@ server <- function(input, output, session) {
       env_hex_list,
       env_scale_list,
       env_stat_label,
-      rx$lbl_env_var)
+      rx$lbl_env_var,
+      is_dark = input$dark_toggle == "dark")
 
     if (debug) {
       message("renderMaplibreCompare: creating comparison map")
       message("rx$map_sp class: ", paste(class(rx$map_sp), collapse = ", "))
       message("map_env_obj class: ", paste(class(map_env_obj), collapse = ", "))
+      message("dark_toggle: ", input$dark_toggle)
     }
 
     compare(rx$map_sp, map_env_obj, elementId = "map")
@@ -309,7 +311,7 @@ server <- function(input, output, session) {
       interpolate_palette,
       column  = "sp.value",
       palette = \(n) hcl.colors(n, palette = "Viridis"))
-    map_sp_obj <- map_sp(sp_hex_list, sp_scale_list)
+    map_sp_obj <- map_sp(sp_hex_list, sp_scale_list, is_dark = input$dark_toggle == "dark")
     rx$map_sp <- map_sp_obj
     if (debug) message("Species map generated and stored in rx$map_sp\n")
 

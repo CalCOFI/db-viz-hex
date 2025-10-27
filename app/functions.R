@@ -696,14 +696,17 @@ prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
 #' @importFrom maplibre maplibre add_fill_layer add_legend add_scale_control
 #'
 #' @export
-map_sp <- function(sp_hex_list, sp_scale_list) {
+map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
   if (debug) {
     message("map_sp: creating species map with ", length(sp_hex_list), " resolution layers")
     message("map_sp: first layer has ", nrow(sp_hex_list[[1]]), " hexagons")
   }
 
   # base map
-  sp_map <- maplibre() |>
+  carto_style
+
+  sp_map <- maplibre(
+    style = carto_style(ifelse(is_dark, "dark-matter", "voyager"))) |>
     fit_bounds(bbox = st_as_sf(sp_hex_list[[1]]))
 
   # add each resolution layer individually
@@ -764,14 +767,15 @@ map_sp <- function(sp_hex_list, sp_scale_list) {
 #' @importFrom maplibre maplibre add_fill_layer add_legend
 #'
 #' @export
-map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label) {
+map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label, is_dark = T) {
   if (debug) {
     message("map_env: creating environmental map with ", length(env_hex_list), " resolution layers")
     message("map_env: first layer has ", nrow(env_hex_list[[1]]), " hexagons")
   }
 
   # create base map
-  env_map <- maplibre() |>
+  env_map <- maplibre(
+    style = carto_style(ifelse(is_dark, "dark-matter", "voyager"))) |>
     fit_bounds(bbox = st_as_sf(env_hex_list[[1]]))
 
   # add each resolution layer individually
