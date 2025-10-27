@@ -214,9 +214,7 @@ server <- function(input, output, session) {
           "<b>Date:</b> ", sp_dtime,
           "<br><b>Species:</b> ", sp_name,
           "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
-          "<br><b>Abundance:</b> ", round(sp_tally, 2)
-        )
-      )
+          "<br><b>Abundance:</b> ", round(sp_tally, 2) ))
 
     # create ggplot (thematic will apply bslib theme automatically)
     p <- ggplot(
@@ -226,7 +224,7 @@ server <- function(input, output, session) {
         y          = sp_tally,
         color      = sp_name,
         text       = hover_text,
-        customdata = customdata) ) +
+        customdata = customdata)) +
       geom_point(size = 3, alpha = 0.8) +
       labs(
         x     = rx$lbl_env_var,
