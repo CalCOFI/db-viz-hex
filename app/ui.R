@@ -1,5 +1,11 @@
 ui <- page_sidebar(
-  title = "CalCOFI Integrated App",
+  window_title = "CalCOFI.io Integrated Database Application",
+  title = tagList(
+    span(
+      a(
+        img(src = "./logo_calcofi.svg", height="50px", .noWS = "after"),
+        href = "https://calcofi.io"),
+      "Integrated App")),
 
   tags$head(includeHTML("google-analytics.html")),
 
