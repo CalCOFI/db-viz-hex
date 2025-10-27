@@ -1,9 +1,10 @@
 server <- function(input, output, session) {
 
   # tour ----
-  tour$init()$start()
+  if (is_tour_on)
+    tour$init()$start()
 
-  # reactive values ----
+  # rx ----
   rx <- reactiveValues(
     df_sp          = NULL,
     df_env         = NULL,
@@ -14,7 +15,7 @@ server <- function(input, output, session) {
     filter_summary = NULL,
     plot_depth     = NULL)
 
-  # default data initialization ----
+  # session.once -> ... ----
   observeEvent(session$clientData, once = TRUE, {
     tryCatch({
       if (debug) message("\n=== LOADING DEFAULT DATA ===")
@@ -64,8 +65,7 @@ server <- function(input, output, session) {
       interpolate_palette,
       column  = "sp.value",
       palette = \(n) hcl.colors(n, palette = "Viridis"))
-    map_sp_obj <- map_sp(sp_hex_list, sp_scale_list)
-    rx$map_sp <- map_sp_obj
+    rx$map_sp <- map_sp(sp_hex_list, sp_scale_list)
     if (debug) message("Default species map generated and stored in rx$map_sp\n")
 
     # prepare scatterplot data
@@ -82,7 +82,7 @@ server <- function(input, output, session) {
     })
   })
 
-  # map content ----
+  # map_content ----
   output$map_content <- renderUI({
     if (is.null(rx$df_sp)) {
       ui_placeholder(
@@ -97,7 +97,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # time series content ----
+  # ts_content ----
   output$ts_content <- renderUI({
     if (is.null(rx$df_sp)) {
       ui_placeholder(
@@ -109,7 +109,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # scatterplot content ----
+  # splot_content ----
   output$splot_content <- renderUI({
     if (is.null(rx$df_sp)) {
       ui_placeholder(
@@ -121,7 +121,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # depth profile content ----
+  # dprof_content ----
   output$dprof_content <- renderUI({
     if (is.null(rx$df_sp)) {
       ui_placeholder(
@@ -138,7 +138,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # map rendering ----
+  # map ----
   output$map <- renderMaplibreCompare({
     req(rx$df_env, rx$map_sp)
 
@@ -156,20 +156,35 @@ server <- function(input, output, session) {
       env_hex_list,
       env_scale_list,
       env_stat_label,
-      rx$lbl_env_var,
-      is_dark = input$dark_toggle == "dark")
+      rx$lbl_env_var)
 
     if (debug) {
       message("renderMaplibreCompare: creating comparison map")
       message("rx$map_sp class: ", paste(class(rx$map_sp), collapse = ", "))
       message("map_env_obj class: ", paste(class(map_env_obj), collapse = ", "))
-      message("dark_toggle: ", input$dark_toggle)
     }
 
     compare(rx$map_sp, map_env_obj, elementId = "map")
   })
 
-  # time series rendering ----
+  # dark_toggle -> map.style ----
+  observeEvent(input$dark_toggle, {
+    style  <- ifelse(
+      input$dark_toggle == "dark",
+      "dark-matter",
+      "voyager")
+
+    if (debug)
+      message("maplibre_compare_proxy -> set_style: ", style)
+
+    maplibre_compare_proxy("map", map_side = "before") |>
+      set_style(carto_style(style))
+
+    maplibre_compare_proxy("map", map_side = "after") |>
+      set_style(carto_style(style))
+  })
+
+  # ts_plot ----
   output$ts_plot <- renderHighchart({
     req(rx$df_sp, rx$df_env, rx$env_var)
 
@@ -182,7 +197,7 @@ server <- function(input, output, session) {
     plot_ts(sp_ts, env_ts, ts_res, rx$env_var)
   })
 
-  # scatterplot rendering ----
+  # splot ----
   output$splot <- renderPlotly({
     req(rx$df_splot)
 
@@ -219,7 +234,7 @@ server <- function(input, output, session) {
       )
   })
 
-  # data selection modal ----
+  # sel_data -> spatial_filter_map ----
   observeEvent(input$sel_data, {
     showModal(modal_data())
     updateSelectizeInput(session, 'sel_name', choices = sp_names, server = TRUE)
@@ -238,7 +253,7 @@ server <- function(input, output, session) {
     })
   })
 
-  # submit data selection ----
+  # submit -> ... ----
   observeEvent(input$submit, {
     if (debug) message("\n=== DATA SELECTION SUBMITTED ===\n")
 
@@ -305,14 +320,14 @@ server <- function(input, output, session) {
 
     # generate map
     if (debug) message("Generating species map...\n")
+    is_dark <- input$dark_toggle == "dark"
     sp_hex_list   <- prep_sp_hex(df_sp, res_range)
     sp_scale_list <- lapply(
       sp_hex_list,
       interpolate_palette,
       column  = "sp.value",
       palette = \(n) hcl.colors(n, palette = "Viridis"))
-    map_sp_obj <- map_sp(sp_hex_list, sp_scale_list, is_dark = input$dark_toggle == "dark")
-    rx$map_sp <- map_sp_obj
+    rx$map_sp <- map_sp(sp_hex_list, sp_scale_list, is_dark = is_dark)
     if (debug) message("Species map generated and stored in rx$map_sp\n")
 
     # prepare scatterplot data
@@ -325,7 +340,7 @@ server <- function(input, output, session) {
     removeModal()
   })
 
-  # scatterplot interactions ----
+  # plotly_click -> ... ----
   observeEvent(event_data("plotly_click", source = "scatterPlotSource"), {
     click_data <- event_data("plotly_click", source = "scatterPlotSource")
     req(click_data, rx$df_splot)
@@ -391,7 +406,7 @@ server <- function(input, output, session) {
     })
   })
 
-  # depth profile modal ----
+  # open_transect_modal -> ... ----
   observeEvent(input$open_transect_modal, {
     req(rx$map_sp)
 
@@ -407,7 +422,7 @@ server <- function(input, output, session) {
     })
   })
 
-  # generate depth profile ----
+  # submit_transect -> ... ----
   observeEvent(input$submit_transect, {
     req(rx$df_sp, rx$df_env)
 
@@ -490,7 +505,7 @@ server <- function(input, output, session) {
     rx$plot_depth
   })
 
-  # dynamic UI outputs ----
+  # map_env_stat ----
   output$map_env_stat <- renderUI({
     selectInput(
       "sel_env_stat",
@@ -519,7 +534,7 @@ server <- function(input, output, session) {
         open = T) )
   })
 
-  # download handlers ----
+  # download_sp ----
   output$download_sp <- downloadHandler(
     filename = function() paste0("species_", format(Sys.Date(), "%Y%m%d"), ".csv"),
     content = function(file) {
@@ -528,6 +543,7 @@ server <- function(input, output, session) {
     }
   )
 
+  # download_env ----
   output$download_env <- downloadHandler(
     filename = function() paste0("environmental_", format(Sys.Date(), "%Y%m%d"), ".csv"),
     content = function(file) {

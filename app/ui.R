@@ -33,7 +33,8 @@ ui <- page_sidebar(
                    width = "100%", class = "mt-2") ),
 
     # Filter summary accordion
-    uiOutput("filter_summary") ),
+    uiOutput("filter_summary"),
+    input_dark_mode(id = "dark_toggle", mode = "dark") ),
 
   # main content ----
   navset_card_underline(
@@ -57,9 +58,6 @@ ui <- page_sidebar(
       uiOutput("dprof_content") ),
 
     nav_spacer(),
-
-    nav_panel(
-      input_dark_mode(id = "dark_toggle", mode = "dark")),
 
     nav_panel(
       "Download",

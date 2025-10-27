@@ -17,6 +17,7 @@ librarian::shelf(
 
 # variables ----
 debug        <- interactive() # set to TRUE for diagnostic console messages
+is_tour_on   <- !debug  # turn off while debugging
 calcofi_db   <- "https://file.calcofi.io/data/calcofi.duckdb"
 use_local_db <- TRUE # set to FALSE to use remote database, eg for ShinyApps.io
 hex_geo      <- here("data/hex.geojson")
@@ -166,5 +167,5 @@ tour <- Conductor$
 onStop(function() {
   dbDisconnect(con, shutdown = TRUE)
   duckdb_shutdown(duckdb())
-  rm(con)
+  # rm(con)
 })
