@@ -17,19 +17,19 @@ librarian::shelf(
   quiet = T)
 options(readr.show_col_types = F)
 
-url_cc         <- "https://file.calcofi.io/calcofi.duckdb"
+# url_cc         <- "https://file.calcofi.io/data/calcofi.duckdb"
 tmp_db         <- here("data/tmp.duckdb")
-cc_db          <- glue("/share/data/swfsc.noaa.gov/calcofi.duckdb")
+# cc_db          <- glue("/share/data/swfsc.noaa.gov/calcofi.duckdb")
+cc_db          <- here("data/calcofi.duckdb")
 spp_db         <- glue("~/My Drive/projects/msens/data/derived/spp.duckdb")
 species_csv    <- here("data/species.csv")
 taxonomy_csv   <- here("data/taxonomy.csv")
 taxon_rank_csv <- here("data/taxon_rank.csv")
 
-is_server     <- Sys.info()[["sysname"]] == "Linux"
-is_ben_laptop <- Sys.info()[["nodename"]] == "Bens-MacBook-Air.local"
+is_server     <- Sys.info()[["sysname"]]  == "Linux" # (!is_server): Ben's laptop
 
 con_tmp <- dbConnect(duckdb(), dbdir = tmp_db)
-res <- dbExecute(con_tmp, glue("ATTACH IF NOT EXISTS '{url_cc}' AS calcofi; USE calcofi"))
+res <- dbExecute(con_tmp, glue("ATTACH IF NOT EXISTS '{cc_db}' AS calcofi; USE calcofi"))
 # dbListTables(con_tmp)
 # [1] "cruise"    "egg"       "grid"      "larva"     "net"       "ship"      "site"     
 # [8] "site_seg"  "species"   "taxa_rank" "taxonomy"  "tow"       "tow_type"
@@ -98,7 +98,7 @@ showtable <- function(data, filename = "table", escape = F, rownames = F, pageLe
 
 d <- tbl(con_tmp, "calcofi.species") |> 
   select(
-    sp_id,
+    species_id,
     scientific_name,
     common_name,
     itis_id_old  = itis_id,      # OLD name: itis_tsn
@@ -112,7 +112,7 @@ d |>
   mutate(
     worms_old_url = id2url(worms_id_old, "worms"),
     itis_old_url  = id2url(itis_id_old,  "itis")) |> 
-  select(sp_id, common_name, scientific_name, worms_id_old = worms_old_url, itis_id_old = itis_old_url) |> 
+  select(species_id, common_name, scientific_name, worms_id_old = worms_old_url, itis_id_old = itis_old_url) |> 
   showtable( 
     "calcofi_species_init")
 ```
@@ -127,7 +127,7 @@ the standard DarwinCore format as with other major taxonomic authorities
 (GBIF, ITIS, IUCN) with the notebook [ingest_taxon.qmd](https://github.com/MarineSensitivity/workflows/blob/9fdfdb6ee98148755c50c39e06d3b9b3469363be/ingest_taxon.qmd). This is only locally available on Ben's laptop for the moment, but can be recreated by running the `ingest_taxon.qmd` workflow.
 
 ```{r con_spp}
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 con_spp <- dbConnect(duckdb(dbdir = spp_db, read_only = F))
 
@@ -161,7 +161,7 @@ con_spp <- dbConnect(duckdb(dbdir = spp_db, read_only = F))
 
 ```{r tbl-worms_id}
 #| tbl-cap: "CalCOFI species changes to WoRMS IDs."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 d <- d |> # 1,148 × 5
   left_join(
@@ -179,7 +179,7 @@ d_worms_chgs <- d |>
     (worms_id_old != worms_id) | 
       (scientific_name != worms_scientific_name)) |> 
   select(
-    sp_id, common_name, 
+    species_id, common_name, 
     scientific_name, worms_scientific_name, 
     worms_id_old, worms_id)
 
@@ -192,7 +192,7 @@ if (nrow(d_worms_chgs) == 0){
       worms_old_url = id2url(worms_id_old, "worms"),
       worms_url     = id2url(worms_id,     "worms")) |> 
   select(
-    sp_id, common_name, 
+    species_id, common_name, 
     scientific_name, worms_scientific_name,
     worms_id_old = worms_old_url, worms_id = worms_url) |> 
     showtable(
@@ -204,7 +204,7 @@ if (nrow(d_worms_chgs) == 0){
 
 ```{r tbl-itis_id}
 #| tbl-cap: "CalCOFI species changes to ITIS IDs."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 d <- d |> # 1,148 × 5
   left_join(
@@ -234,7 +234,7 @@ d_itis_chgs <- d |>
     (itis_id_old != itis_id) |
       (scientific_name != itis_scientific_name)) |> 
   select(
-    sp_id, common_name,
+    species_id, common_name,
     scientific_name, itis_scientific_name,
     itis_id_old, itis_id)
 
@@ -247,7 +247,7 @@ if (nrow(d_itis_chgs) == 0){
       itis_old_url = id2url(itis_id_old, "itis"),
       itis_url     = id2url(itis_id,     "itis")) |> 
     select(
-      sp_id, common_name, 
+      species_id, common_name, 
       scientific_name, itis_scientific_name,
       itis_id_old = itis_old_url, itis_id = itis_url) |> 
     showtable(
@@ -261,7 +261,7 @@ TODO: Fold this later into output tables.
 
 ```{r tbl-worms_invalid}
 #| tbl-cap: "CalCOFI species with alternative invalid WoRMS scientific names."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 # TODO: get common names across taxons in a separate table and look up match across any for preferred
 
@@ -281,7 +281,7 @@ d_worms_invalid <- d |> # 1,148 × 8
     by           = join_by(worms_id),
     relationship = "many-to-many") |> 
   filter(!is.na(worms_invalid_id)) |> 
-  arrange(sp_id, worms_invalid_scientific_name)
+  arrange(species_id, worms_invalid_scientific_name)
 # View(d_invalid)
 # d_invalid |>
 #   glimpse()
@@ -295,7 +295,7 @@ if (nrow(d_worms_invalid) == 0){
       worms_url         = id2url(worms_id, "worms"),
       worms_invalid_url = id2url(worms_invalid_id, "worms")) |> 
   select(
-    sp_id, scientific_name, 
+    species_id, scientific_name, 
     common_name, worms_scientific_name, 
     worms_id = worms_url,
     worms_invalid_scientific_name,
@@ -310,7 +310,7 @@ if (nrow(d_worms_invalid) == 0){
 
 ```{r tbl-worms_common_name}
 #| tbl-cap: "CalCOFI species differences with WoRMS common names."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 # TODO: get common names across taxons in a separate table and look up match across any for preferred
 
@@ -341,7 +341,7 @@ d_worms_cn_chgs <- d |>
     !is.na(worms_common_name),
     (tolower(common_name) != tolower(worms_common_name)) ) |> 
   select(
-    sp_id, scientific_name, 
+    species_id, scientific_name, 
     common_name, worms_common_name, 
     worms_id)
 
@@ -361,7 +361,7 @@ if (nrow(d_worms_cn_chgs) == 0){
 
 ```{r tbl-itis_common_name}
 #| tbl-cap: "CalCOFI species differences with ITIS common names."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 d <- d |> # 1,148 × 10
   left_join(
@@ -382,7 +382,7 @@ d_itis_cn_chgs <- d |>
     !is.na(itis_common_name),
       (tolower(common_name) != tolower(itis_common_name)) ) |> 
   select(
-    sp_id, scientific_name, 
+    species_id, scientific_name, 
     common_name, itis_common_name, 
     itis_id)
 
@@ -402,7 +402,7 @@ if (nrow(d_itis_cn_chgs) == 0){
 
 ```{r tbl-species_csv}
 #| tbl-cap: "CalCOFI updated species table."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 d <- d |> 
   rename(
@@ -412,7 +412,7 @@ d <- d |>
     scientific_name = coalesce(worms_scientific_name, itis_scientific_name, scientific_name_old),
     common_name     = coalesce(common_name_old, worms_common_name, itis_common_name)) |> 
   select(
-    sp_id, scientific_name, common_name, 
+    species_id, scientific_name, common_name, 
     worms_id, itis_id,
     scientific_name_worms = worms_scientific_name, common_name_worms = worms_common_name,
     scientific_name_itis  = itis_scientific_name,  common_name_itis  = itis_common_name,
@@ -436,8 +436,8 @@ d |>
 - [USING KEY in Recursive CTEs – DuckDB](https://duckdb.org/2025/05/23/using-key.html)
 
 ```{r tbl-taxon_parentage_1}
-#| tbl-cap: "CalCOFI taxonomic parentage example for anchovies _Clupeiformes_ (sp_id: 9)."
-#| eval: !expr is_ben_laptop
+#| tbl-cap: "CalCOFI taxonomic parentage example for anchovies _Clupeiformes_ (species_id: 9)."
+#| eval: !expr (!is_server)
 
 d_species <- read_csv(species_csv)
 
@@ -512,7 +512,7 @@ get_taxon_parentage <- function(taxonID, authority = "worms"){
 }
 
 d_tp_ex <- d_species |> 
-  filter(common_name == "anchovies") |>  # sp_id: 9; scientific_name: Clupeiformes
+  filter(common_name == "anchovies") |>  # species_id: 9; scientific_name: Clupeiformes
   pull(worms_id) |>
   get_taxon_parentage("worms")
 
@@ -524,8 +524,8 @@ d_tp_ex |>
 ### Get parent taxa for all taxon
 
 ```{r tbl-taxon_parentage_all}
-#| tbl-cap: "CalCOFI taxonomic parentage example for anchovies _Clupeiformes_ (sp_id: 9)."
-#| eval: !expr is_ben_laptop
+#| tbl-cap: "CalCOFI taxonomic parentage example for anchovies _Clupeiformes_ (species_id: 9)."
+#| eval: !expr (!is_server)
 
 d_taxonomy <- d_species |>
   select(worms_id) |>
@@ -558,7 +558,7 @@ d_taxonomy |>
 
 ```{r tbl-taxon_rank}
 #| tbl-cap: "Taxonomic ranks in WoRMS and ITIS."
-#| eval: !expr is_ben_laptop
+#| eval: !expr (!is_server)
 
 tr_w <- tbl(con_spp, "worms") |>
   distinct(taxonRank) |>
@@ -605,7 +605,7 @@ The following tables are written to the `calcofi` database on the server:
 - `taxon_rank`
 
 ```{r write_taxon_taxonomy_calcofidb}
-#| eval: !expr is_server
+#| eval: !expr (!is_server)
 
 con_cc <- dbConnect(duckdb(), dbdir = cc_db, read_only = F)
 
@@ -615,7 +615,7 @@ d_taxon_rank <- read_csv(taxon_rank_csv)
 
 d_species <- d_species |> 
   select(
-    sp_id, scientific_name, common_name, 
+    species_id, scientific_name, common_name, 
     worms_id, itis_id) |> 
     # Excluding fields:
     # scientific_name_worms, common_name_worms,
@@ -623,9 +623,9 @@ d_species <- d_species |>
     # scientific_name_old,   common_name_old,
     # worms_id_old,          itis_id_old
   mutate(
-    sp_id    = as.integer(sp_id),
-    worms_id = as.integer(worms_id),
-    itis_id  = as.integer(itis_id))
+    species_id = as.integer(species_id),
+    worms_id   = as.integer(worms_id),
+    itis_id    = as.integer(itis_id))
 
 d_taxonomy <- d_taxonomy |> 
   select(
@@ -647,10 +647,20 @@ dbWriteTable(con_cc, "taxonomy",  d_taxonomy,   overwrite = T)
 dbWriteTable(con_cc, "taxa_rank", d_taxon_rank, overwrite = T)
 ```
 
+## Manual: Upload to server
+
+Upload to the server via [rstudio.calcofi.io](https://rstudio.calcofi.io), **Upload**:
+
+- from: local file on laptop\
+  `r here("data/calcofi.duckdb")`
+
+- to: remote file on server\
+  `/share/public/data/calcofi.duckdb`
+
 ## Get taxonomic children
 
 ```{r tbl-taxon_children_example}
-#| tbl-cap: "CalCOFI taxonomic children example for rockfishes _Sebastes_ (sp_id: 683; worms_id: 126175)."
+#| tbl-cap: "CalCOFI taxonomic children example for rockfishes _Sebastes_ (species_id: 683; worms_id: 126175)."
 
 # TODO: ensure valid taxonID (ie == acceptedNameUsageID)
 #  like in get_taxon_parentage()
@@ -720,7 +730,7 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
 # Get all species within a genus
 # species_in_genus <- get_children_by_rank(con_spp, "Sebastes", "Species")
 
-d_tc <- get_taxon_children(126175, con_tmp)
+d_tc <- get_taxon_children(126175, con = con_cc)
 
 showtable(d_tc, "calcofi_taxon_children_Sebastes")
 ```
