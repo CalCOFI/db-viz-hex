@@ -1,5 +1,53 @@
 # data retrieval functions ----
 
+#' Retrieve Taxon Children from Database
+#'
+#' Queries the taxonomy table to find all child taxa of a given taxonID,
+#' using a recursive CTE. Returns a tibble with taxon details and depth levels.
+#'
+#' @param taxonID Character string of the parent taxonID to query
+#' @param con DuckDB database connection object
+#' @param authority Character string specifying the taxonomic authority (default: "worms")
+get_taxon_children <- function(taxonID, con, authority = "worms") {
+
+  query_sql <- glue("
+    WITH RECURSIVE taxon_children AS (
+      -- Base case: find the parent taxon
+      SELECT
+        taxonID,
+        acceptedNameUsageID,
+        parentNameUsageID,
+        scientificName,
+        taxonRank,
+        0 as depth_level
+      FROM taxonomy
+      WHERE taxonID = ?
+
+      UNION ALL
+
+      -- Recursive case: find children taxa
+      SELECT
+        t.taxonID,
+        t.acceptedNameUsageID,
+        t.parentNameUsageID,
+        t.scientificName,
+        t.taxonRank,
+        tc.depth_level + 1 as depth_level
+      FROM taxonomy t
+      INNER JOIN taxon_children tc ON t.parentNameUsageID = tc.taxonID
+      WHERE
+        t.parentNameUsageID IS NOT NULL AND
+        t.authority = '{authority}'
+    )
+    SELECT tc.*, COALESCE(tr.rank_order, 99) as rank_order
+    FROM taxon_children tc
+    LEFT JOIN taxa_rank tr ON tc.taxonRank = tr.taxonRank
+    ORDER BY tc.depth_level, COALESCE(tr.rank_order, 99), tc.scientificName")
+
+  dbGetQuery(con, query_sql, params = list(taxonID)) |>
+    tibble()
+}
+
 #' Retrieve Species Larval Abundance Data from Database
 #'
 #' Queries species, larva, net, tow, and site tables with temporal filters,
@@ -48,10 +96,27 @@ get_sp <- function(sp_name, qtr, date_range) {
   if (debug) message("get_sp: sp_name = ", sp_name, ", qtr = ", paste(qtr, collapse = ","),
                      ", date_range = ", paste(date_range, collapse = " to "))
 
-  df_sp <- tbl(con, "species") |>
+  # DEBUG
+  # sp_name    = c("Anchovies (Engraulidae)", "Pacific sardine (pilchard) (Sardinops sagax)")
+  # qtr        = 1:4
+  # date_range = c("1949-02-28", "2023-01-25") |> as.Date()
+
+  df_children <- tbl(con, "species") |>
     mutate(
       name = paste0(common_name, " (", scientific_name, ")")) |>
     filter(name %in% sp_name) |>
+    select(name, worms_id) |>
+    collect() |>
+    mutate(
+      children = map(worms_id, get_taxon_children, con = con) ) |>
+    unnest(children) |>
+    select(name, depth_level, taxonRank, worms_id = acceptedNameUsageID)
+
+  df_sp <- tbl(con, "species") |>
+    inner_join(
+      df_children,
+      by = "worms_id",
+      copy = T) |>
     left_join(
       tbl(con, "larva"),
       by = "species_id") |>
@@ -74,9 +139,17 @@ get_sp <- function(sp_name, qtr, date_range) {
       std_tally = std_haul_factor * tally / prop_sorted)
 
   if (debug) {
-    # n_rows <- df_sp |> summarize(n = n()) |> pull(n)
-    # cat("get_sp: returning lazy table with", n_rows, "rows\n")
-    message("get_sp: returning lazy table")
+    # show number of rows per taxonomic child by name
+    df_sp |>
+      group_by(name, depth_level, taxonRank, scientific_name, worms_id) |>
+      summarize(
+        child  = paste(depth_level, "-", taxonRank, ":", scientific_name, "(", worms_id, ")"),
+        n      = n(),
+        .groups = "drop") |>
+      select(name, child, n) |>
+      arrange(name, child, n) |>
+      collect() |>
+      print()
   }
 
   return(df_sp)

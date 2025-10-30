@@ -3,3 +3,5 @@ ocean_subset.csv
 calcofi.duckdb
 hex.geojson
 hex.geojson.zip
+calcofi_0-pre-taxa.duckdb
+calcofi_1-taxa.duckdb

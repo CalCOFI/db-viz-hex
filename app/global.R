@@ -9,9 +9,9 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 # Load libraries
 librarian::shelf(
   bslib, bsicons, conductor, DBI, dplyr, duckdb, geosphere, ggplot2, glue, here,
-  highcharter, htmltools, htmlwidgets, leaflet, litedown, lubridate, mapgl,
-  plotly, purrr, readr, sf, shiny, shinyWidgets, stringr, thematic, tibble,
-  tidyr,
+  highcharter, htmltools, htmlwidgets, httr2, leaflet, litedown, lubridate,
+  mapgl, plotly, purrr, readr, sf, shiny, shinyWidgets, stringr, thematic,
+  tibble, tidyr,
   quiet = TRUE)
 
 # variables ----
@@ -25,21 +25,39 @@ hex_geo      <- here("data/hex.geojson")
 # bottle, cast: https://github.com/CalCOFI/calcofi4db/blob/main/inst/ingest/calcofi.org/bottle-database/flds_rename.csv
 # ...: https://github.com/CalCOFI/calcofi4db/blob/main/inst/ingest/swfsc.noaa.gov/calcofi-db/flds_redefine.csv
 
+is_remote_newer <- function(remote_url, local_path) {
+  # Get remote modification time
+  resp <- request(remote_url) |> req_method("HEAD") |> req_perform()
+  remote_time <- resp_header(resp, "last-modified") |>
+    as.POSIXct(format = "%a, %d %b %Y %H:%M:%S", tz = "GMT")
+
+  # Get local modification time
+  if (!file.exists(local_path)) return(TRUE)
+  local_time <- file.info(local_path)$mtime
+
+  # Compare
+  return(remote_time > local_time)
+}
+
 if (use_local_db){
   local_db <- here("data/calcofi.duckdb")
-  if (!file.exists(local_db))
+
+  if (!file.exists(local_db) | is_remote_newer(calcofi_db, local_db)){
+    message("Downloading latest CalCOFI database...")
     download.file(calcofi_db, local_db)
+  }
+
   con <- dbConnect(duckdb(read_only = T, dbdir = local_db))
 } else {
   tmp_dk <- here("data/tmp.duckdb")
   con <- dbConnect(duckdb(), dbdir = tmp_dk)
 
   # load DuckDB extensions with error handling
-  dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
-  dbExecute(con, glue("ATTACH IF NOT EXISTS '{calcofi_db}' AS calcofi; USE calcofi"))
+  q <- dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
+  q <- dbExecute(con, glue("ATTACH IF NOT EXISTS '{calcofi_db}' AS calcofi; USE calcofi"))
 }
-dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
-dbExecute(con, "INSTALL spatial; LOAD spatial;")
+q <- dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
+q <- dbExecute(con, "INSTALL spatial; LOAD spatial;")
 
 # dbListTables(con) |> sort()
 
