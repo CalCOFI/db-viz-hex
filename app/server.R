@@ -16,8 +16,6 @@ server <- function(input, output, session) {
     sel_zones      = NULL,
     map_sp         = NULL,
     df_splot       = NULL,
-    df_ts          = NULL,
-    df_dprof_raw   = NULL,
     df_dprof       = NULL,
     filter_summary = NULL,
     summary_stats  = NULL,
@@ -608,7 +606,7 @@ server <- function(input, output, session) {
         color = "Species"
       )
 
-    env_plot <- filt_env_data |>
+    proc_env_data <- filt_env_data |>
       mutate(
         dist_bins = filt_env_data$distance %>%
           cut(seq(0, by = dist_bin_size, length.out = ceiling(max(.))/dist_bin_size+1), include.lowest = TRUE),
@@ -634,7 +632,9 @@ server <- function(input, output, session) {
           rx$lbl_env_var, ": ", round(qty, 2), "<br>",
           "Num. Obs: ", n, "<br>",
           "Date Range: ", min_dtime, " to ", max_dtime)
-      ) |>
+      )
+
+    env_plot <- proc_env_data |>
       ggplot(
         aes(
           xmin = min_dist,
@@ -651,6 +651,8 @@ server <- function(input, output, session) {
         y = "Depth (m)",
         fill = paste0("Average ", rx$lbl_env_var)
       )
+
+    rx$df_dprof <- list(filt_sp_data, proc_env_data)
 
     profile_plot <- subplot(
       ggplotly(sp_plot, tooltip = "text"),
@@ -709,16 +711,121 @@ server <- function(input, output, session) {
     div(class = "small", markdown(paste(rx$summary_stats, collapse = "  \n")))
   })
 
-  # download_int ----
+  # download_data ----
   output$download_data <- downloadHandler(
-    filename = function() paste0("calcofi_data_", format(Sys.Date(), "%Y%m%d"), ".csv"),
+    filename = function() paste0("calcofi_data_", format(Sys.Date(), "%Y%m%d"), ".zip"),
     content = function(file) {
 
-      req(rx$df_sp)
-      req(rx$df_env)
+      raw_sel  <- input$sel_raw_data_download %||% character(0)
+      proc_sel <- input$sel_proc_data_download %||% character(0)
+      all_sel  <- c(raw_sel, proc_sel)
 
-      # TODO: Add integrated data file
-      write.csv(rx$df_env, file, row.names = FALSE)
-    }
+      if (length(all_sel) == 0) {
+        showNotification("Select at least one dataset.", type = "warning")
+        return(NULL)
+      }
+
+      zip_root <- tempfile(pattern = "calcofi_download_", tmpdir = tempdir())
+      dir.create(zip_root, showWarnings = FALSE, recursive = TRUE)
+      dir.create(zip_root, showWarnings = FALSE, recursive = TRUE)
+      paths   <- character()
+
+      write_data <- function(df, rel_path) {
+        full_path <- file.path(zip_root, rel_path)
+        dir.create(dirname(full_path), showWarnings = FALSE, recursive = TRUE)
+        write.csv(df, full_path, row.names = FALSE, quote = TRUE)
+        paths <<- c(paths, rel_path)       # <<- adds to the outer variable
+      }
+
+      for (i in all_sel) {
+
+        if (i == "raw_sp") {
+          req(rx$df_sp)
+          write_data(rx$df_sp |> collect(), "raw_sp.csv")
+
+        } else if (i == "raw_env") {
+          req(rx$df_env)
+          write_data(rx$df_env |> collect(), "raw_env.csv")
+
+        } else if (i == "int") {
+          req(rx$df_sp, rx$df_env)
+
+          max_hours_diff <- input$time_window %||% 72
+          max_meters_diff <- input$dist_window %||% 1000
+
+          d_sp <- rx$df_sp |>
+            select(
+              sp_name  = name,
+              sp_dtime = time_start,
+              sp_tally = std_tally,
+              sp_lon   = longitude,
+              sp_lat   = latitude)
+
+          d_env <- rx$df_env |>
+            select(
+              env_dtime = dtime,
+              env_qty   = qty,
+              env_cst   = cst_cnt,
+              env_depth = depthm,
+              env_lon   = lon_dec,
+              env_lat   = lat_dec,
+              env_depth = depthm) |>
+            mutate(
+              env_dtime_lwr = sql(glue("env_dtime - INTERVAL {max_hours_diff} HOUR")),
+              env_dtime_upr = sql(glue("env_dtime + INTERVAL {max_hours_diff} HOUR")))
+
+          # join by time difference
+          int_data <- d_sp |>
+            left_join(
+              d_env,
+              # join species to env observations within desired time interval
+              by = join_by(between(sp_dtime, env_dtime_lwr, env_dtime_upr))) |>
+            # compute distance between species and ocean observations
+            mutate(
+              dist_m = sql("ST_Distance_Sphere(ST_Point(sp_lon, sp_lat), ST_Point(env_lon, env_lat))")) |>
+            # get pairs within desired distance
+            filter(
+              dist_m <= max_meters_diff) |> collect()
+
+          write_data(int_data, "integrated_data.csv")
+
+        } else if (i == "map") {
+          req(rx$df_sp, rx$df_env)
+          sp_hex  <- prep_sp_hex(rx$df_sp, res_range) |> bind_rows() |> select(-tooltip)
+          env_hex <- prep_env_hex(rx$df_env, res_range,
+                                  input$map_env_stat %||% "mean") |>
+            bind_rows() |> select(-tooltip)
+
+          write_data(sp_hex , "map/species_map.csv")
+          write_data(env_hex, "map/env_map.csv")
+
+        } else if (i == "ts") {
+          req(rx$df_sp, rx$df_env)
+          sp_ts  <- prep_ts_sp(rx$df_sp, input$sel_ts_res %||% "year")
+          env_ts <- prep_ts_env(rx$df_env, input$sel_ts_res %||% "year")
+
+          write_data(sp_ts , "time_series/species_ts.csv")
+          write_data(env_ts, "time_series/ocean_ts.csv")
+
+        } else if (i == "splot") {
+          data <- rx$df_splot %||%
+            prep_splot(rx$df_sp, rx$df_env, "mean",
+                       method = input$splot_method %||% "nearest_time",
+                       max_hours_diff = input$splot_max_hours_diff %||% 72,
+                       max_meters_diff = input$splot_max_meters_diff %||% 1000)
+
+          write_data(data, "scatterplot.csv")
+
+        } else if (i == "dprof") {
+          sp_data <- rx$df_dprof[[1]]
+          env_data <- rx$df_dprof[[2]]
+          write_data(sp_data, "depth_profile/species_dprof.csv")
+          write_data(env_data, "depth_profile/env_dprof.csv")
+        }
+      }
+
+      zip::zip(zipfile = file, files = paths, root = zip_root, include_directories = TRUE)
+    },
+    contentType = "application/zip"
   )
 }

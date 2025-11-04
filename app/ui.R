@@ -51,9 +51,15 @@ ui <- page_sidebar(
 
         conditionalPanel(
           "input.outputPanel === 'Scatterplot'",
-          numericInput("splot_max_hours_diff", "Max Time Diff (Hrs.)", value = 72, min = 0, max = 72),
-          numericInput("splot_max_meters_diff", "Max Distance Diff (m)", value = 1000, min = 0, max = 5000),
-          selectInput("splot_method", "Join Method",
+          numericInput("splot_max_hours_diff", "Time Window (Hrs.)", value = 72, min = 0, max = 72),
+          numericInput("splot_max_meters_diff", "Distance Window (m)", value = 1000, min = 0, max = 5000),
+          selectInput("splot_method",
+                      tagList("Join Method",
+                              tooltip(bs_icon("question-circle"),
+                                      # Wrap the content in HTML() to enable HTML formatting
+                                      HTML("Specify how <strong>environmental observations</strong> within the time and distance windows should be joined to the species observations.<br>
+                                            <strong>Single Nearest Cast:</strong> Averages observations in the nearest cast (in time or distance).<br>
+                                            <strong>Average Within Range:</strong> Averages all observations within the chosen window.")) ),
                       c("Single nearest cast (by time)"      =  "nearest_time",
                         "Single nearest cast (by distance)"  =  "nearest_dist",
                         "Average within range"               =  "average"),
@@ -106,7 +112,7 @@ ui <- page_sidebar(
             div(
               style = "display: inline-block; margin-right: 20px;",
                 numericInput(
-                  "int_hours",
+                  "time_window",
                   "Time window (hours)",
                   value = 72,
                   min   = 0,
@@ -115,7 +121,7 @@ ui <- page_sidebar(
             div(
               style = "display: inline-block;",
               numericInput(
-                "int_meters",
+                "dist_window",
                 "Distance window (meters)",
                 value = 1000,
                 min   = 0,

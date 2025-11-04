@@ -627,8 +627,7 @@ prep_ts_env <- function(df_env, ts_res) {
 #'
 #' @export
 prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
-                       depth_target = 0, max_hours_diff = 72,
-                       max_meters_diff = 1000) {
+                       max_hours_diff = 72, max_meters_diff = 1000) {
 
   # prepare species data
   d_sp <- df_sp |>
