@@ -32,12 +32,13 @@ server <- function(input, output, session) {
       sel_qtr         <- 1:4
       sel_date_range  <- min_max_date
       sel_depth_range <- c(0, 212)
+      ck_children     <- TRUE
 
       if (debug) message("Loading default species: ", sel_name)
 
-      # retrieve data (lazy tables from database)
-      df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range)
-      df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
+    # retrieve data (lazy tables from database)
+    df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children)
+    df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
 
       # validate data
       n_sp <- df_sp |> summarize(n = n()) |> pull(n)
@@ -256,7 +257,7 @@ server <- function(input, output, session) {
       toWebGL() # for performance
   })
 
-  # sel_data -> spatial_filter_map ----
+  # sel_data -> modal_data(), spatial_filter_map ----
   observeEvent(input$sel_data, {
     showModal(modal_data())
     updateSelectizeInput(session, 'sel_name', choices = sp_names, server = TRUE)
@@ -350,6 +351,7 @@ server <- function(input, output, session) {
     sel_qtr         <- input$sel_qtr
     sel_date_range  <- input$sel_date_range
     sel_depth_range <- input$sel_depth_range
+    ck_children     <- input$ck_children
 
     if (debug) message("Selections: sp_name =", sel_name, ", env_var =", sel_env_var)
 
@@ -358,7 +360,7 @@ server <- function(input, output, session) {
     if (debug) message("Spatial filter:", if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) "custom polygon" else "none")
 
     # retrieve data (lazy tables from database)
-    df_sp <- get_sp(sel_name, sel_qtr, sel_date_range)
+    df_sp <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children)
     df_env <- get_env(
       sel_env_var,
       sel_qtr,
