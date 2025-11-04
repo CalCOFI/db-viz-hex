@@ -161,6 +161,7 @@ get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
       date,
       time,
       dtime,
+      cst_cnt,
       depthm,
       lat_dec,
       lon_dec,
@@ -227,7 +228,7 @@ prep_sp_hex <- function(df_sp, res_range) {
     hex_fld <- glue("hex_h3res{.x}")
 
     df_sp_temp |>
-      select(hex_int = all_of(hex_fld), std_tally) |>
+      select(hex_int = all_of(hex_fld), std_tally, time_start) |>
       mutate(resolution = .x)
   }) |>
     reduce(union_all)
@@ -236,15 +237,20 @@ prep_sp_hex <- function(df_sp, res_range) {
   hex_sp_collected <- combined_res_tbl |>
     group_by(resolution, hex_int) |>
     summarize(
-      sp.value = mean(std_tally, na.rm = TRUE),
+      sp.value   =  mean(std_tally, na.rm = TRUE),
+      n          =  sum(!is.na(std_tally)),
+      min_dtime  =  min(time_start, na.rm = TRUE),
+      max_dtime  =  max(time_start, na.rm = TRUE),
       .groups = "drop") |>
     filter(
       !is.na(hex_int),
       !is.na(sp.value)) |>
     mutate(
       hex_id  = sql("HEX(hex_int)"),
-      tooltip = round(sp.value, 2)) |>
-    select(resolution, hexid = hex_id, sp.value, tooltip) |>
+      tooltip = paste0("Avg. Abundance: ", round(sp.value, 2),
+                 "</br>Num. Samples: ", n,
+                 "</br>Date Range: ", min_dtime, " to ", max_dtime)) |>
+    select(resolution, hexid = hex_id, sp.value, n, min_dtime, max_dtime, tooltip) |>
     collect()
 
   if (debug) message("prep_sp_hex: collected ", nrow(hex_sp_collected), " hex records before join")
@@ -321,7 +327,7 @@ prep_env_hex <- function(df_env, res_range, env_stat) {
     hex_fld <- glue("hex_h3res{.x}")
 
     df_env_temp |>
-      select(hex_int = all_of(hex_fld), qty) |>
+      select(hex_int = all_of(hex_fld), qty, dtime) |>
       mutate(resolution = .x)
   }) |>
     reduce(union_all)
@@ -338,13 +344,18 @@ prep_env_hex <- function(df_env, res_range, env_stat) {
         env_stat == "sd"     ~ sd(qty, na.rm = TRUE),
         TRUE ~ mean(qty, na.rm = TRUE)
       ),
+      n          =  sum(!is.na(qty)),
+      min_dtime  =  min(dtime, na.rm = TRUE),
+      max_dtime  =  max(dtime, na.rm = TRUE),
       .groups = "drop") |>
     filter(
       !is.na(hex_int),
       !is.na(env.value)) |>
     mutate(
       hex_id  = sql("HEX(hex_int)"),
-      tooltip = round(env.value, 2)) |>
+      tooltip = paste0("Value: ", round(env.value, 2),
+                       "</br>Num. Samples: ", n,
+                       "</br>Date Range: ", min_dtime, " to ", max_dtime)) |>
     select(resolution, hexid = hex_id, env.value, tooltip) |>
     collect()
 
@@ -542,7 +553,9 @@ prep_ts_env <- function(df_env, ts_res) {
 #' @importFrom fuzzyjoin difference_inner_join
 #'
 #' @export
-prep_splot <- function(df_sp, df_env, env_stat, max_hours_diff = 72, max_meters_diff = 1000) {
+prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
+                       depth_target = 0, max_hours_diff = 72,
+                       max_meters_diff = 1000) {
 
   # prepare species data
   d_sp <- df_sp |>
@@ -552,45 +565,65 @@ prep_splot <- function(df_sp, df_env, env_stat, max_hours_diff = 72, max_meters_
       sp_tally = std_tally,
       sp_lon   = longitude,
       sp_lat   = latitude) # |>
-    # compute()
+  # compute()
 
   # prepare environmental data
   d_env <- df_env |>
     select(
       env_dtime = dtime,
       env_qty   = qty,
+      env_cst   = cst_cnt,
       env_depth = depthm,
       env_lon   = lon_dec,
-      env_lat   = lat_dec) |>
+      env_lat   = lat_dec,
+      env_depth = depthm) |>
     mutate(
       env_dtime_lwr = sql(glue("env_dtime - INTERVAL {max_hours_diff} HOUR")),
       env_dtime_upr = sql(glue("env_dtime + INTERVAL {max_hours_diff} HOUR")))
 
   # join by time difference
   d_sp_env_raw <- d_sp |>
-    left_join(
-      d_env,
-      # join species to env observations within desired time interval
-      by = join_by(between(sp_dtime, env_dtime_lwr, env_dtime_upr))) |>
-    # compute distance between species and ocean observations
-    mutate(
-      dist_m = sql("ST_Distance_Sphere(ST_Point(sp_lon, sp_lat), ST_Point(env_lon, env_lat))")) |>
-    # get pairs within desired distance
-    filter(
-      dist_m <= max_meters_diff)
+      left_join(
+        d_env,
+        # join species to env observations within desired time interval
+        by = join_by(between(sp_dtime, env_dtime_lwr, env_dtime_upr))) |>
+      # compute distance between species and ocean observations
+      mutate(
+        dist_m = sql("ST_Distance_Sphere(ST_Point(sp_lon, sp_lat), ST_Point(env_lon, env_lat))")) |>
+      # get pairs within desired distance
+      filter(
+        dist_m <= max_meters_diff)
 
-  d_sp_env <- d_sp_env_raw |>
-    # above is raw; below is summarized -> Downloads
-    group_by(
-      sp_name, sp_tally, sp_dtime, sp_lon, sp_lat) |>
-    # summarize ocean observations for each individual species observation
-    summarize(
-      env_qty = (!!sym(env_stat))(env_qty, na.rm = TRUE),
-      .groups = "drop") |>
-    select(
-      sp_name, sp_dtime, sp_lon, sp_lat, sp_tally,
-      env_qty) |>
-    collect()
+  order_by <- if (method == "nearest_time") {
+    expr(tibble(time_diff,dist_m,env_cst))
+  } else if (method == "nearest_dist" ) {
+    expr(tibble(dist_m,time_diff,env_cst))
+  }
+
+  d_sp_env <- if (method == "nearest_time" | method == "nearest_dist") {
+    d_sp_env_raw |>
+      mutate(
+        time_diff = if_else(sp_dtime - env_dtime > lubridate::seconds(0),
+                            sp_dtime - env_dtime,
+                            env_dtime - sp_dtime)) |>
+      group_by(
+        sp_name, sp_tally, sp_dtime, sp_lon, sp_lat) |>
+      slice_min(
+        !!order_by,
+        with_ties = TRUE) |>
+      summarize(
+        env_qty = mean(env_qty, na.rm = TRUE),
+        .groups = "drop")
+  } else {
+    d_sp_env_raw |>
+      group_by(
+        sp_name, sp_tally, sp_dtime, sp_lon, sp_lat) |>
+      summarize(
+        env_qty = mean(env_qty, na.rm = TRUE),
+        .groups = "drop") |>
+      select(
+        sp_name, sp_dtime, sp_lon, sp_lat, sp_tally,
+        env_qty) }
 
   d_sp_env
 }
@@ -625,7 +658,7 @@ prep_splot <- function(df_sp, df_env, env_stat, max_hours_diff = 72, max_meters_
 #'
 #' @export
 prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
-                                 sel_depth_range, drawn_polygon) {
+                                sel_depth_range, drawn_polygon, selected_grid_zones) {
   filter_list <- list()
 
   # species
@@ -656,12 +689,33 @@ prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
 
   # spatial
   if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) {
-    filter_list <- c(filter_list, "**Spatial:** Custom region defined")
+    filter_list <- c(filter_list, "**Spatial:** Custom polygon defined")
+  } else if (!is.null(selected_grid_zones) && length(selected_grid_zones) > 0) {
+    zone_text <- if (length(selected_grid_zones) <= 5) {
+      paste(selected_grid_zones, collapse = ", ")
+    } else {
+      paste(length(selected_grid_zones), "zones selected")
+    }
+    filter_list <- c(filter_list, paste0("**Spatial:** Grid zones - ", zone_text))
   } else {
     filter_list <- c(filter_list, "**Spatial:** All locations")
   }
 
   return(filter_list)
+}
+
+prep_summary_stats <- function(df_sp, df_env) {
+  stat_list <- list()
+
+  stat_list <- c(stat_list, "**Species Data**")
+
+  stat_list <- c(stat_list, paste0(nrow(df_sp |> collect()), " observations"))
+
+  stat_list <- c(stat_list, "\n**Environmental Data**")
+
+  stat_list <- c(stat_list, paste0(nrow(df_env |> collect()), " observations"))
+
+  return(stat_list)
 }
 
 
@@ -730,7 +784,8 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
       colors   = sp_scale_list[[1]]$colors,
       type     = "continuous",
       position = "bottom-left") |>
-    add_scale_control(position = "top-left", unit = "metric")
+    add_scale_control(position = "top-left", unit = "metric") |>
+    add_navigation_control()
 
   return(sp_map)
 }
@@ -789,7 +844,7 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
         fill_opacity     = 0.6,
         min_zoom         = zoom_breaks[i],
         max_zoom         = zoom_breaks[i+1],
-        tooltip          = "env.value")
+        tooltip          = "tooltip")
   }
 
   # add legend
@@ -799,7 +854,8 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
       values   = signif(env_scale_list[[1]]$breaks, 2),
       colors   = env_scale_list[[1]]$colors,
       type     = "continuous",
-      position = "bottom-right")
+      position = "bottom-right") |>
+    add_navigation_control()
 
   return(env_map)
 }
@@ -1093,7 +1149,7 @@ modal_data <- function() {
       nav_panel(
         "Spatial",
         br(),
-        "Draw a polygon to filter data by region, or leave blank to use all data.",
+        "Select pre-defined zones by clicking on the grid, or draw a custom polygon. Click selected zones again to deselect them.",
         maplibreOutput("spatial_filter_map", height = "400px")
       ),
     ),
@@ -1103,7 +1159,7 @@ modal_data <- function() {
       input_task_button("submit", "Submit")
     ),
 
-    size = "m",
+    size = "l",
     fade = FALSE
   )
 }

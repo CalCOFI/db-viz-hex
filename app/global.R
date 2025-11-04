@@ -8,10 +8,10 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 
 # Load libraries
 librarian::shelf(
-  bslib, bsicons, conductor, DBI, dplyr, duckdb, geosphere, ggplot2, glue, here,
-  highcharter, htmltools, htmlwidgets, leaflet, litedown, lubridate, mapgl,
-  plotly, purrr, readr, sf, shiny, shinyWidgets, stringr, thematic, tibble,
-  tidyr,
+  bslib, bsicons, calcofi/calcofi4r, conductor, DBI, dplyr, duckdb, geosphere,
+  ggplot2, glue, here,highcharter, htmltools, htmlwidgets, leaflet, litedown,
+  lubridate, mapgl, plotly, purrr, readr, sf, shiny, shinyWidgets, stringr,
+  thematic, tibble, tidyr,
   quiet = TRUE)
 
 # variables ----

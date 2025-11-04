@@ -19,27 +19,45 @@ ui <- page_sidebar(
     # action buttons
     actionButton("sel_data", "Select Filters", width = "100%", class = "mb-2", icon = icon("filter")),
 
-    # conditional panels for tab-specific controls
-    conditionalPanel(
-      "input.outputPanel === 'Map'",
-      uiOutput("map_env_stat") ),
-
-    conditionalPanel(
-      "input.outputPanel === 'Time Series'",
-      uiOutput("ts_res") ),
-
     conditionalPanel(
       "input.outputPanel === 'Scatterplot'",
       p("Click on a point or use the box/lasso tool to select points to see their location.",
-        class = "small text-muted mt-2") ),
+        class = "small text-muted mt-2")),
 
     conditionalPanel(
       "input.outputPanel === 'Depth Profile'",
       actionButton("open_transect_modal", "Draw Transect",
                    width = "100%", class = "mt-2") ),
 
-    # Filter summary accordion
-    uiOutput("filter_summary") ),
+    accordion(
+      accordion_panel(
+        "Filter Summary",
+        uiOutput("filter_summary") ),
+
+      accordion_panel(
+        "Summary Statistics",
+        uiOutput("summary_statistics") ),
+
+      accordion_panel(
+        "Plot Options",
+
+        conditionalPanel(
+          "input.outputPanel === 'Map'",
+          uiOutput("map_env_stat") ),
+
+        conditionalPanel(
+          "input.outputPanel === 'Time Series'",
+          uiOutput("ts_res") ),
+
+        conditionalPanel(
+          "input.outputPanel === 'Scatterplot'",
+          numericInput("splot_max_hours_diff", "Max Time Diff (Hrs.)", value = 72, min = 0, max = 72),
+          numericInput("splot_max_meters_diff", "Max Distance Diff (m)", value = 1000, min = 0, max = 5000),
+          selectInput("splot_method", "Join Method",
+                      c("Single nearest cast (by time)"      =  "nearest_time",
+                        "Single nearest cast (by distance)"  =  "nearest_dist",
+                        "Average within range"               =  "average"),
+                      selected = "nearest_time")))) ),
 
   # main content ----
   navset_card_underline(
@@ -69,9 +87,53 @@ ui <- page_sidebar(
 
     nav_panel(
       "Download",
-      downloadButton("download_sp",  "Download Species Data",       class = "btn-secondary mb-2", style = "width: 100%;"),
-      downloadButton("download_env", "Download Environmental Data", class = "btn-secondary mb-2", style = "width: 100%;") ),
-    # TODO: Download Species - Env Data
+      "Select the datasets you'd like to download, then click \"Download.\"",
+      checkboxGroupInput(
+        "sel_raw_data_download",
+        "Raw datasets",
+        c(
+          "Raw environmental data"    =  "raw_env",
+          "Raw species data"          =  "raw_sp",
+          "Integrated data (raw
+           environmental and species
+           combined)"                 =  "int"),
+        width = "100%"),
+      conditionalPanel(
+        condition = "input.sel_raw_data_download.includes('int')",
+        div(
+          style = "margin-top: 8px; padding-left: 20px; border-left: 3px solid #337ab7;",
+          div(
+            div(
+              style = "display: inline-block; margin-right: 20px;",
+                numericInput(
+                  "int_hours",
+                  "Time window (hours)",
+                  value = 72,
+                  min   = 0,
+                  width = 200
+                ) ),
+            div(
+              style = "display: inline-block;",
+              numericInput(
+                "int_meters",
+                "Distance window (meters)",
+                value = 1000,
+                min   = 0,
+                width = 200
+              ) ) ),
+          helpText("These windows define the tolerance for joining environmental and species data."),
+        )
+      ),
+      checkboxGroupInput(
+        "sel_proc_data_download",
+        "Processed datasets (the aggregated data used for the visualizations)",
+        c(
+          "Map data"                  =  "map",
+          "Time-series data"          =  "ts",
+          "Scatterplot data"          =  "splot",
+          "Depth Profile data"        =  "dprof"),
+        width = "100%"),
+        downloadButton("download_data", "Download", class = "btn-secondary mb-2") ),
 
     nav_panel(
       "About",
