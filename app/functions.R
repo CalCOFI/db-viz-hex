@@ -1161,7 +1161,7 @@ modal_data <- function() {
             "Include observations recorded at finer taxonomic levels, e.g.
             include observations recorded to Genus and Species levels if Taxa
             selected is at the higher level of Family; otherwise only show
-            observations to the given taxonic level." ))),
+            observations to the given taxonomic level." ))),
 
       nav_panel(
         "Environmental", br(),
