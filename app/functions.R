@@ -109,8 +109,12 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
 
   if (ck_children){
     df_children <- tbl(con, "species") |>
+      left_join(
+        tbl(con, "taxonomy") |>
+          filter(authority == "worms"),
+        by = join_by(worms_id == taxonID)) |>
       mutate(
-        name = paste0(common_name, " (", scientific_name, ")")) |>
+        name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
       filter(name %in% sp_name) |>
       select(name, worms_id) |>
       collect() |>
@@ -126,8 +130,12 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
         copy = T)
   } else {
     df_sp <- tbl(con, "species") |>
+      left_join(
+        tbl(con, "taxonomy") |>
+          filter(authority == "worms"),
+        by = join_by(worms_id == taxonID)) |>
       mutate(
-        name = paste0(common_name, " (", scientific_name, ")")) |>
+        name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
       filter(name %in% sp_name)
   }
 
