@@ -434,14 +434,14 @@ server <- function(input, output, session) {
 
     # generate map
     if (debug) message("Generating species map...\n")
-    is_dark <- input$dark_toggle == "dark"
+    is_dark       <- input$dark_toggle == "dark"
     sp_hex_list   <- prep_sp_hex(df_sp, res_range)
     sp_scale_list <- lapply(
       sp_hex_list,
       interpolate_palette,
       column  = "sp.value",
       palette = \(n) hcl.colors(n, palette = "Viridis"))
-    rx$map_sp <- map_sp(sp_hex_list, sp_scale_list, is_dark = is_dark)
+    rx$map_sp     <- map_sp(sp_hex_list, sp_scale_list, is_dark = is_dark)
     if (debug) message("Species map generated and stored in rx$map_sp\n")
 
     # prepare scatterplot data

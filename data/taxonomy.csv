@@ -290,15 +290,13 @@ worms,158899,158899,Lobianchia,Genus,125498,accepted,https://rs.gbif.org/vocabul
 worms,158898,158898,Lampanyctus tenuiformis,Species,125825,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Brauer, 1906)",NA
 worms,126625,126625,Loweina rara,Species,125828,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Lütken, 1892)",NA
 worms,125828,125828,Loweina,Genus,125498,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Fowler, 1925",NA
-worms,1525495,1525495,Dasyscopelus obtusirostris,Species,296480,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Tåning, 1928)",NA
-worms,296480,296480,Dasyscopelus,Genus,125498,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Günther, 1864",NA
 worms,217715,217715,Myctophum aurolaternatum,Species,125829,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Garman, 1899",1899
 worms,125829,125829,Myctophum,Genus,125498,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Rafinesque, 1810",1810
 worms,126626,126626,Myctophum nitidulum,Species,125829,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Garman, 1899",1899
 worms,272723,272723,Myctophum lychnobium,Species,125829,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Bolin, 1946",1946
 worms,317659,317659,Dasyscopelus asper,Species,296480,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Richardson, 1845)",NA
+worms,296480,296480,Dasyscopelus,Genus,125498,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Günther, 1864",NA
 worms,158897,158897,Lampanyctus nobilis,Species,125825,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Tåning, 1928",1928
-worms,1525496,1525496,Dasyscopelus selenops,Species,296480,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Tåning, 1928)",NA
 worms,126629,126629,Notolychnus valdiviae,Species,125830,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Brauer, 1904)",NA
 worms,125830,125830,Notolychnus,Genus,125498,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Fraser-Brunner, 1949",NA
 worms,125831,125831,Notoscopelus,Genus,125498,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Günther, 1864",NA
@@ -740,8 +738,6 @@ worms,126025,126025,Xyrichtys,Genus,125541,accepted,https://rs.gbif.org/vocabula
 worms,240727,240727,Oxyjulis californica,Species,240726,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Günther, 1861)",NA
 worms,240726,240726,Oxyjulis,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Gill, 1863",1863
 worms,126024,126024,Thalassoma,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Swainson, 1839",NA
-worms,1702292,1702292,Bodianus pulcher,Species,126017,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Ayres, 1854)",NA
-worms,126017,126017,Bodianus,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Bloch, 1790",1782-95
 worms,273604,273604,Xyrichtys mundiceps,Species,126025,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Gill, 1862",1862
 worms,282314,282314,Polylepion cruentum,Species,270475,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Gomon, 1977",1977
 worms,270475,270475,Polylepion,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Gomon, 1977",1977
@@ -1247,7 +1243,6 @@ worms,158914,158914,Notoscopelus caudispinosus,Species,125831,accepted,https://r
 worms,217681,217681,Benthosema fibulatum,Species,125815,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Gilbert & Cramer, 1897)",NA
 worms,272653,272653,Centrobranchus andreae,Species,125817,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Lütken, 1892)",NA
 worms,126603,126603,Hygophum hygomii,Species,125823,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Lütken, 1892)",NA
-worms,1525960,1525960,Dasyscopelus spinosus,Species,296480,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Steindachner, 1867)",NA
 worms,126522,126522,Lampris guttatus,Species,125783,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Brünnich, 1788)",NA
 worms,125783,125783,Lampris,Genus,125478,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Retzius, 1799",NA
 worms,125478,125478,Lampridae,Family,10310,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Gill, 1862",NA
@@ -1329,6 +1324,7 @@ worms,159746,159746,Opistognathus,Genus,151443,accepted,https://rs.gbif.org/voca
 worms,212856,212856,Plectroglyphidodon imparipennis,Species,204335,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Vaillant & Sauvage, 1875)",NA
 worms,204335,204335,Plectroglyphidodon,Genus,125553,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Fowler & Ball, 1924",1924
 worms,273527,273527,Bodianus diplotaenia,Species,126017,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Gill, 1862)",NA
+worms,126017,126017,Bodianus,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Bloch, 1790",1782-95
 worms,275763,275763,Halichoeres dispilus,Species,158813,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"(Günther, 1864)",NA
 worms,205227,205227,Oxycheilinus,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Gill, 1862",NA
 worms,205714,205714,Pseudocheilinus,Genus,125541,accepted,https://rs.gbif.org/vocabulary/gbif/nomenclatural_status/valid,"Bleeker, 1862",NA
@@ -1701,6 +1697,7 @@ itis,623625,NA,Lipolagus ochotensis,Species,623321,valid,NA,"(Schmidt, 1938)",NA
 itis,162086,NA,Bathylagus pacificus,Species,162081,valid,NA,"Gilbert, 1890",NA
 itis,162081,NA,Bathylagus,Genus,162080,valid,NA,"Günther, 1878",NA
 itis,623380,NA,Bathylagoides wesethi,Species,623317,valid,NA,"(Bolin, 1938)",NA
+itis,162096,NA,Leuroglossus stilbius,Species,162095,valid,NA,"Gilbert, 1890",NA
 itis,623331,NA,Dolicholagus longirostris,Species,623311,valid,NA,"(Maul, 1948)",NA
 itis,162098,NA,Leuroglossus schmidti,Species,162095,valid,NA,"Rass, 1955",NA
 itis,162163,NA,Gonostomatidae,Family,553151,valid,NA,NA,NA
@@ -1714,6 +1711,7 @@ itis,622492,NA,Sigmops ebelingi,Species,622342,valid,NA,"(Grey, 1960)",NA
 itis,162232,NA,Danaphos oculatus,Species,162231,valid,NA,"(Garman, 1899)",NA
 itis,622691,NA,Diplophos proximus,Species,162179,valid,NA,"Parr, 1931",NA
 itis,162179,NA,Diplophos,Genus,162163,valid,NA,"Günther, 1873",NA
+itis,162181,NA,Diplophos taenia,Species,162179,valid,NA,"Günther, 1873",NA
 itis,162198,NA,Ichthyococcus,Genus,622313,valid,NA,"Bonaparte, 1840",NA
 itis,622698,NA,Ichthyococcus irregularis,Species,162198,valid,NA,"Rechnitzer and Böhlke, 1958",NA
 itis,162203,NA,Valenciennellus tripunctulatus,Species,162202,valid,NA,"(Esmark, 1871)",NA
@@ -1733,6 +1731,7 @@ itis,162219,NA,Argyropelecus hemigymnus,Species,162213,valid,NA,"Cocco, 1829",NA
 itis,162221,NA,Argyropelecus sladeni,Species,162213,valid,NA,"Regan, 1908",NA
 itis,162227,NA,Sternoptyx diaphana,Species,162226,valid,NA,"Hermann, 1781",NA
 itis,162226,NA,Sternoptyx,Genus,622315,valid,NA,"Hermann, 1781",NA
+itis,553133,NA,Osmeriformes,Order,161928,valid,NA,NA,NA
 itis,553138,NA,Stomiiformes,Order,553121,valid,NA,NA,NA
 itis,622316,NA,Astronesthinae,Subfamily,162282,valid,NA,NA,NA
 itis,622675,NA,Sternoptyx obscura,Species,162226,valid,NA,"Garman, 1899",NA
@@ -1844,14 +1843,12 @@ itis,623836,NA,Lampanyctus steinbecki,Species,162632,valid,NA,"Bolin, 1939",NA
 itis,623876,NA,Lobianchia gemellarii,Species,162752,valid,NA,"(Chevrolat, 1863)",NA
 itis,623716,NA,Lampanyctus tenuiformis,Species,162632,valid,NA,"(Brauer, 1906)",NA
 itis,162717,NA,Loweina rara,Species,162714,valid,NA,"(Lütken, 1892)",NA
-itis,623878,NA,Myctophum obtusirostre,Species,162719,valid,NA,"Tåning, 1928",NA
 itis,162727,NA,Myctophum aurolaternatum,Species,162719,valid,NA,"Garman, 1899",NA
 itis,162726,NA,Myctophum nitidulum,Species,162719,valid,NA,"Garman, 1899",NA
 itis,162719,NA,Myctophum,Genus,623694,valid,NA,"Rafinesque, 1810",NA
 itis,623845,NA,Myctophum lychnobium,Species,162719,valid,NA,"Bolin, 1946",NA
 itis,162721,NA,Myctophum asperum,Species,162719,valid,NA,"Richardson, 1845",NA
 itis,162643,NA,Lampanyctus nobilis,Species,162632,valid,NA,"Tåning, 1928",NA
-itis,162724,NA,Myctophum selenops,Species,162719,valid,NA,"Tåning, 1928",NA
 itis,162729,NA,Notolychnus valdiviae,Species,162728,valid,NA,"(Brauer, 1904)",NA
 itis,162653,NA,Notoscopelus,Genus,623695,valid,NA,"Günther, 1864",NA
 itis,162654,NA,Notoscopelus resplendens,Species,162653,valid,NA,"(Richardson, 1845)",NA
@@ -1928,6 +1925,7 @@ itis,161624,NA,Nemichthys scolopaceus,Species,161621,valid,NA,"Richardson, 1848"
 itis,635966,NA,Heteroconger digueti,Species,161395,valid,NA,"(Pellegrin, 1923)",NA
 itis,161632,NA,Cyema atrum,Species,161631,valid,NA,"Günther, 1878",NA
 itis,161630,NA,Cyematidae,Family,553147,valid,NA,NA,NA
+itis,635826,NA,Leptocephalus holti,Species,161630,valid,NA,"Schmidt, 1909",NA
 itis,161160,NA,Muraenidae,Family,553142,valid,NA,NA,NA
 itis,161157,NA,Chlopsis,Genus,553181,valid,NA,"Rafinesque, 1810",NA
 itis,161194,NA,Gymnothorax mordax,Species,161185,valid,NA,"(Ayres, 1859)",NA
@@ -1988,6 +1986,7 @@ itis,167694,NA,Epinephelus,Genus,643094,valid,NA,"Bloch, 1793",NA
 itis,551018,NA,Epinephelinae,Subfamily,167674,valid,NA,NA,NA
 itis,167841,NA,Pronotogrammus multifasciatus,Species,167839,valid,NA,"Gill, 1863",NA
 itis,167832,NA,Paralabrax clathratus,Species,167830,valid,NA,"(Girard, 1854)",NA
+itis,643089,NA,Serraninae,Subfamily,167674,valid,NA,NA,NA
 itis,167830,NA,Paralabrax,Genus,643089,valid,NA,"Girard, 1856",NA
 itis,167834,NA,Paralabrax nebulifer,Species,167830,valid,NA,"(Girard, 1854)",NA
 itis,167791,NA,Diplectrum,Genus,643089,valid,NA,"Holbrook, 1855",NA
@@ -1995,6 +1994,7 @@ itis,167849,NA,Serranus,Genus,643089,valid,NA,"Cuvier, 1816",NA
 itis,167675,NA,Anthiinae,Subfamily,167674,valid,NA,NA,NA
 itis,168578,NA,Phtheirichthys lineatus,Species,168577,valid,NA,"(Menzies, 1791)",NA
 itis,167802,NA,Hemanthias peruanus,Species,167799,valid,NA,"(Steindachner, 1875)",NA
+itis,643093,NA,Grammistini,Tribe,551018,valid,NA,NA,NA
 itis,167804,NA,Hemanthias signifer,Species,167799,valid,NA,"(Garman, 1899)",NA
 itis,168176,NA,Priacanthidae,Family,167641,valid,NA,NA,NA
 itis,168192,NA,Pristigenys serrula,Species,168188,valid,NA,"(Gilbert, 1891)",NA
@@ -2160,7 +2160,6 @@ itis,170511,NA,Halichoeres semicinctus,Species,170501,valid,NA,"(Ayres, 1859)",N
 itis,613036,NA,Xyrichtys,Genus,170477,valid,NA,"Cuvier, 1814",NA
 itis,170597,NA,Oxyjulis californica,Species,170596,valid,NA,"(Günther, 1861)",NA
 itis,170567,NA,Thalassoma,Genus,170477,valid,NA,"Swainson, 1839",NA
-itis,170744,NA,Semicossyphus pulcher,Species,170743,valid,NA,"(Ayres, 1854)",NA
 itis,614509,NA,Xyrichtys mundiceps,Species,613036,valid,NA,"Gill, 1862",NA
 itis,614109,NA,Polylepion cruentum,Species,170688,valid,NA,"Gomon, 1977",NA
 itis,170102,NA,Chromis atrilobata,Species,170079,valid,NA,"Gill, 1862",NA
@@ -2261,6 +2260,7 @@ itis,166462,NA,Syngnathus leptorhynchus,Species,166444,valid,NA,"Girard, 1854",N
 itis,166603,NA,Cosmocampus arctus,Species,166596,valid,NA,"(Jenkins and Evermann, 1889)",NA
 itis,166443,NA,Syngnathidae,Family,166438,valid,NA,NA,NA
 itis,166444,NA,Syngnathus,Genus,644844,valid,NA,"Linnaeus, 1758",NA
+itis,166457,NA,Syngnathus californiensis,Species,166444,valid,NA,"Storer, 1845",NA
 itis,551495,NA,Macroramphosus,Genus,644842,valid,NA,"Lacepède, 1803",NA
 itis,166404,NA,Aulorhynchus flavidus,Species,166403,valid,NA,"Gill, 1861",NA
 itis,171746,NA,Gobiidae,Family,171745,valid,NA,NA,NA
@@ -2457,6 +2457,7 @@ itis,164570,NA,Chaunax,Genus,164569,valid,NA,"Lowe, 1846",NA
 itis,164660,NA,Caulophryne,Genus,164658,valid,NA,"Goode and Bean, 1896",NA
 itis,649743,NA,Caulophryne pelagica,Species,164660,valid,NA,"(Brauer, 1902)",NA
 itis,622873,NA,Melanocetus johnsonii,Species,164612,valid,NA,"Günther, 1864",NA
+itis,553153,NA,Ogcocephalioidei,Suborder,164495,valid,NA,NA,NA
 itis,164625,NA,Oneirodidae,Family,622712,valid,NA,NA,NA
 itis,164653,NA,Ceratiidae,Family,622712,valid,NA,NA,NA
 itis,164661,NA,Linophrynidae,Family,622712,valid,NA,NA,NA
@@ -2518,7 +2519,6 @@ itis,162657,NA,Notoscopelus caudispinosus,Species,162653,valid,NA,"(Johnson, 186
 itis,623747,NA,Benthosema fibulatum,Species,162679,valid,NA,"(Gilbert and Cramer, 1897)",NA
 itis,162734,NA,Centrobranchus andreae,Species,162731,valid,NA,"(Lütken, 1892)",NA
 itis,623714,NA,Hygophum hygomii,Species,162692,valid,NA,"(Lütken, 1892)",NA
-itis,162725,NA,Myctophum spinosum,Species,162719,valid,NA,"(Steindachner, 1867)",NA
 itis,166326,NA,Lampris guttatus,Species,1160306,valid,NA,"(Brünnich, 1788)",NA
 itis,166360,NA,Stylephorus chordatus,Species,166359,valid,NA,"Shaw, 1791",NA
 itis,164665,NA,Gadiformes,Order,164385,valid,NA,NA,NA
@@ -2720,6 +2720,7 @@ itis,82439,NA,Onychoteuthis,Genus,82436,valid,NA,"Lichtenstein, 1818",1818-01-01
 itis,82442,NA,Onychoteuthis borealijaponicus,Species,82439,valid,NA,"Okada, 1927",1927-01-01
 itis,556017,NA,Onychoteuthis compacta,Species,82439,valid,NA,"(Berry, 1913)",NA
 itis,82440,NA,Onychoteuthis banksii,Species,82439,valid,NA,"(Leach, 1817)",NA
+itis,82443,NA,Onykia,Genus,82436,valid,NA,"Lesueur, 1821",1821-01-01
 itis,82567,NA,Cycloteuthis sirventi,Species,82566,valid,NA,"Joubin, 1919",1919-01-01
 itis,82414,NA,Gonatidae,Family,82390,valid,NA,"Hoyle, 1886",1886-01-01
 itis,82429,NA,Berryteuthis,Genus,82414,valid,NA,"Naef, 1921",1921-01-01

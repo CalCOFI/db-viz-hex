@@ -15,32 +15,47 @@ librarian::shelf(
   quiet = TRUE)
 
 # variables ----
-debug        <- interactive() # set to TRUE for diagnostic console messages
-is_tour_on   <- !debug  # turn off while debugging
 calcofi_db   <- "https://file.calcofi.io/data/calcofi.duckdb"
-use_local_db <- TRUE # set to FALSE to use remote database, eg for ShinyApps.io
+local_db     <- here("data/calcofi.duckdb")
+local_db_srv <- "/share/public/data/calcofi.duckdb"
+tmp_db       <- here("data/tmp.duckdb")
 hex_geo      <- here("data/hex.geojson")
+is_server    <- Sys.info()[["sysname"]] == "Linux"
+use_local_db <- TRUE           # set to FALSE to use remote database, eg for ShinyApps.io
+debug        <- interactive()  # set to TRUE for diagnostic console messages
+is_tour_on   <- !debug         # turn off while debugging
 
-# field name issues? check these name remapping files:
-# bottle, cast: https://github.com/CalCOFI/calcofi4db/blob/main/inst/ingest/calcofi.org/bottle-database/flds_rename.csv
-# ...: https://github.com/CalCOFI/calcofi4db/blob/main/inst/ingest/swfsc.noaa.gov/calcofi-db/flds_redefine.csv
+is_remote_newer <- function(remote_url, local_path) {
+  # remote modification time
+  resp <- request(remote_url) |> req_method("HEAD") |> req_perform()
+  remote_time <- resp_header(resp, "last-modified") |>
+    as.POSIXct(format = "%a, %d %b %Y %H:%M:%S", tz = "GMT")
+
+  # local modification time
+  if (!file.exists(local_path)) return(TRUE)
+  local_time <- file.info(local_path)$mtime
+
+  # compare
+  return(remote_time > local_time)
+}
 
 if (use_local_db){
-  local_db <- here("data/calcofi.duckdb")
-  if (!file.exists(local_db))
+  if (!is_server && (!file.exists(local_db) | is_remote_newer(calcofi_db, local_db))){
+    message("Downloading latest CalCOFI database...")
     download.file(calcofi_db, local_db)
-  con <- dbConnect(duckdb(read_only = T, dbdir = local_db))
+  }
+  if (is_server){
+    con <- dbConnect(duckdb(read_only = T, dbdir = local_db_srv))
+  } else{
+    con <- dbConnect(duckdb(read_only = T, dbdir = local_db))
+  }
 } else {
-  tmp_dk <- here("data/tmp.duckdb")
-  con <- dbConnect(duckdb(), dbdir = tmp_dk)
-
-  # load DuckDB extensions with error handling
-  dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
-  dbExecute(con, glue("ATTACH IF NOT EXISTS '{calcofi_db}' AS calcofi; USE calcofi"))
+  con <- dbConnect(duckdb(), dbdir = tmp_db)
+  q <- dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
+  q <- dbExecute(con, glue("ATTACH IF NOT EXISTS '{calcofi_db}' AS calcofi; USE calcofi"))
 }
-dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
-dbExecute(con, "INSTALL spatial; LOAD spatial;")
-
+q <- dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
+q <- dbExecute(con, "INSTALL spatial; LOAD spatial;")
 # dbListTables(con) |> sort()
 
 # load hexagons
