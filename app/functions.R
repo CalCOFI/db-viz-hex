@@ -92,31 +92,54 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
 #' @importFrom lubridate quarter
 #'
 #' @export
-get_sp <- function(sp_name, qtr, date_range) {
-  if (debug) message("get_sp: sp_name = ", sp_name, ", qtr = ", paste(qtr, collapse = ","),
-                     ", date_range = ", paste(date_range, collapse = " to "))
+get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
+  if (debug)
+    message(
+      "get_sp: sp_name = ", sp_name, ", qtr = ", paste(qtr, collapse = ","),
+      ", date_range = ", paste(date_range, collapse = " to "),
+      ", ck_children = ", ck_children)
 
   # DEBUG
-  # sp_name    = c("Anchovies (Engraulidae)", "Pacific sardine (pilchard) (Sardinops sagax)")
-  # qtr        = 1:4
-  # date_range = c("1949-02-28", "2023-01-25") |> as.Date()
+  # sp_name     = c("Anchovies (Engraulidae)", "Pacific sardine (pilchard) (Sardinops sagax)")
+  # qtr         = 1:4
+  # date_range  = c("1949-02-28", "2023-01-25") |> as.Date()
+  # ck_children = T
 
-  df_children <- tbl(con, "species") |>
-    mutate(
-      name = paste0(common_name, " (", scientific_name, ")")) |>
-    filter(name %in% sp_name) |>
-    select(name, worms_id) |>
-    collect() |>
-    mutate(
-      children = map(worms_id, get_taxon_children, con = con) ) |>
-    unnest(children) |>
-    select(name, depth_level, taxonRank, worms_id = acceptedNameUsageID)
+  #browser()
 
-  df_sp <- tbl(con, "species") |>
-    inner_join(
-      df_children,
-      by = "worms_id",
-      copy = T) |>
+  if (ck_children){
+    df_children <- tbl(con, "species") |>
+      left_join(
+        tbl(con, "taxonomy") |>
+          filter(authority == "worms"),
+        by = join_by(worms_id == taxonID)) |>
+      mutate(
+        name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
+      filter(name %in% sp_name) |>
+      select(name, worms_id) |>
+      collect() |>
+      mutate(
+        children = map(worms_id, get_taxon_children, con = con) ) |>
+      unnest(children) |>
+      select(name, depth_level, taxonRank, worms_id = acceptedNameUsageID)
+
+    df_sp <- tbl(con, "species") |>
+      inner_join(
+        df_children,
+        by = "worms_id",
+        copy = T)
+  } else {
+    df_sp <- tbl(con, "species") |>
+      left_join(
+        tbl(con, "taxonomy") |>
+          filter(authority == "worms"),
+        by = join_by(worms_id == taxonID)) |>
+      mutate(
+        name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
+      filter(name %in% sp_name)
+  }
+
+  df_sp <- df_sp |>
     left_join(
       tbl(con, "larva"),
       by = "species_id") |>
@@ -139,17 +162,29 @@ get_sp <- function(sp_name, qtr, date_range) {
       std_tally = std_haul_factor * tally / prop_sorted)
 
   if (debug) {
-    # show number of rows per taxonomic child by name
-    df_sp |>
-      group_by(name, depth_level, taxonRank, scientific_name, worms_id) |>
-      summarize(
-        child  = paste(depth_level, "-", taxonRank, ":", scientific_name, "(", worms_id, ")"),
-        n      = n(),
-        .groups = "drop") |>
-      select(name, child, n) |>
-      arrange(name, child, n) |>
-      collect() |>
-      print()
+    if (ck_children){
+      # show number of rows per taxonomic child by name
+      df_sp |>
+        group_by(name, depth_level, taxonRank, scientific_name, worms_id) |>
+        summarize(
+          child  = paste(depth_level, "-", taxonRank, ":", scientific_name, "(", worms_id, ")"),
+          n      = n(),
+          .groups = "drop") |>
+        select(name, child, n) |>
+        arrange(name, child, n) |>
+        collect() |>
+        print()
+    } else {
+      # show number of rows
+      df_sp |>
+        group_by(name, worms_id) |>
+        summarize(
+          n      = n(),
+          .groups = "drop") |>
+        select(name, n) |>
+        collect() |>
+        print()
+    }
   }
 
   return(df_sp)
@@ -1054,16 +1089,14 @@ plot_ts <- function(sp_ts, env_ts, ts_res, sel_env_var) {
         hcaes(x = time_ts, y = avg, std = std),
         name = series_name,
         id = series_name,
-        yAxis = panel_index
-      ) |>
+        yAxis = panel_index) |>
       hc_add_series(
         data = series_data,
         type = "arearange",
         hcaes(x = time_ts, low = lwr, high = upr),
         name = series_name,
         linkedTo = series_name,
-        yAxis = panel_index
-      )
+        yAxis = panel_index)
   }
 
   # display the final chart
@@ -1110,27 +1143,33 @@ modal_data <- function() {
   modalDialog(
     title = "Data Selection",
     navset_tab(
-      nav_panel(
-        "Species",
-        br(),
 
+      nav_panel(
+        "Taxa", br(),
         selectizeInput(
           "sel_name",
-          "Species",
+          "Taxa",
           choices = NULL,
-          multiple = TRUE
-        ),
-      ),
+          multiple = TRUE ),
+        checkboxInput(
+          "ck_children",
+          value = TRUE,
+          label = tooltip(
+            trigger = list(
+              "Include taxonomic children",
+              bs_icon("info-circle")),
+            "Include observations recorded at finer taxonomic levels, e.g.
+            include observations recorded to Genus and Species levels if Taxa
+            selected is at the higher level of Family; otherwise only show
+            observations to the given taxonic level." ))),
+
       nav_panel(
-        "Environmental",
-        br(),
+        "Environmental", br(),
         selectInput(
           "sel_env_var",
           "Variable",
           env_var_choices,
-          selected = "Temperature"
-        ),
-
+          selected = "Temperature"),
         numericRangeInput(
           "sel_depth_range",
           "Depth Range (m)",
@@ -1138,12 +1177,10 @@ modal_data <- function() {
           width = NULL,
           separator = " to ",
           min = 0,
-          max = 512
-        ),
-      ),
+          max = 512 )),
+
       nav_panel(
-        "Temporal",
-        br(),
+        "Temporal", br(),
         selectInput(
           "sel_qtr",
           "Quarter",
@@ -1153,7 +1190,6 @@ modal_data <- function() {
             Q4 = 4),
           selected = 1:4,
           multiple = TRUE),
-
         dateRangeInput(
           "sel_date_range",
           "Date Range",
@@ -1161,24 +1197,19 @@ modal_data <- function() {
           start = min_max_date[1],
           end = min_max_date[2],
           min = min_max_date[1],
-          max = min_max_date[2]),
-      ),
+          max = min_max_date[2]) ),
+
       nav_panel(
-        "Spatial",
-        br(),
+        "Spatial", br(),
         "Draw a polygon to filter data by region, or leave blank to use all data.",
-        maplibreOutput("spatial_filter_map", height = "400px")
-      ),
-    ),
+        maplibreOutput("spatial_filter_map", height = "400px") )),
 
     footer = tagList(
       modalButton("Cancel"),
-      input_task_button("submit", "Submit")
-    ),
+      input_task_button("submit", "Submit") ),
 
     size = "m",
-    fade = FALSE
-  )
+    fade = FALSE)
 }
 
 

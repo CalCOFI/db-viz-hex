@@ -102,7 +102,12 @@ source(here("app/functions.R"))
 
 # extract species names and date range ----
 sp_names <- tbl(con, "species") |>
-  mutate(name = paste0(common_name, " (", scientific_name, ")")) |>
+  left_join(
+    tbl(con, "taxonomy") |>
+      filter(authority == "worms"),
+    by = join_by(worms_id == taxonID)) |>
+  mutate(
+    name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
   pull(name)
 
 larva_date_rng <- tbl(con, "tow") |>
@@ -124,7 +129,7 @@ min_max_date <- c(
   max(larva_date_rng[[2]], bottle_date_rng[[2]]) )
 
 # global constants ----
-default_sp_name <- "Pacific sardine (pilchard) (Sardinops sagax)"
+default_sp_name <- "Pacific sardine (pilchard) (species: Sardinops sagax)"
 
 ts_res_choices <- list(
   "Year"          = "year",
