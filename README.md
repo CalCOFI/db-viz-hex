@@ -2,12 +2,12 @@
 
 The app is available online here:
 
-- https://shiny.calcofi.io/int-app
-  ![calcofi\_int-app\_2025-10-08.png (2434×1644)](../bbest-streamline/figures/calcofi_int-app_2025-10-08.png)
+- https://app.calcofi.io/int
+  ![calcofi\_int-app\_2025-10-08.png (2434×1644)](./figures/calcofi_int-app_2025-10-08.png)
 
 You may be presented with a tour dialog when opening:
 
-  <img src="../bbest-streamline/figures/calcofi_int-app_tour-init-msg_2025-10-08.png" alt="tour dialog" width="200">
+  <img src="./figures/calcofi_int-app_tour-init-msg_2025-10-08.png" alt="tour dialog" width="200">
 
 The CalCOFI Integrated Application is using the 
 [integrated database](https://calcofi.io/docs/db.html#integrated-database-ingestion-strategy) 
