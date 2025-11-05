@@ -129,7 +129,9 @@ min_max_date <- c(
   max(larva_date_rng[[2]], bottle_date_rng[[2]]) )
 
 # global constants ----
-default_sp_name <- "Pacific sardine (pilchard) (species: Sardinops sagax)"
+default_sp_name         <- "Pacific sardine (pilchard) (species: Sardinops sagax)"
+default_max_hours_diff  <- 6
+default_max_meters_diff <- 2000
 
 ts_res_choices <- list(
   "Year"          = "year",

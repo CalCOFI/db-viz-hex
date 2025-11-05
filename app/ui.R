@@ -51,8 +51,8 @@ ui <- page_sidebar(
 
         conditionalPanel(
           "input.outputPanel === 'Scatterplot'",
-          numericInput("splot_max_hours_diff", "Time Window (Hrs.)", value = 72, min = 0, max = 72),
-          numericInput("splot_max_meters_diff", "Distance Window (m)", value = 1000, min = 0, max = 5000),
+          numericInput("splot_max_hours_diff", "Time Window (Hrs.)",   value = default_max_hours_diff,  min = 0, max = 72),
+          numericInput("splot_max_meters_diff", "Distance Window (m)", value = default_max_meters_diff, min = 0, max = 5000),
           selectInput("splot_method",
                       tagList("Join Method",
                               tooltip(bs_icon("question-circle"),
@@ -114,10 +114,9 @@ ui <- page_sidebar(
                 numericInput(
                   "time_window",
                   "Time window (hours)",
-                  value = 72,
+                  value = default_max_hours_diff,
                   min   = 0,
-                  width = 200
-                ) ),
+                  width = 200) ),
             div(
               style = "display: inline-block;",
               numericInput(

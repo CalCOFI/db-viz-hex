@@ -57,6 +57,7 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
 #' @param sp_name Character vector of species names (format: "Common Name (Scientific Name)")
 #' @param qtr Numeric vector of quarters to include (1-4)
 #' @param date_range Date vector of length 2 (start date, end date)
+#' @param ck_children Boolean (TRUE or FALSE) whether to include taxonomic children
 #'
 #' @return dbplyr lazy table with columns:
 #'   \itemize{
@@ -636,8 +637,8 @@ prep_ts_env <- function(df_env, ts_res) {
 #' @param df_sp dbplyr lazy table or data.frame with species data
 #' @param df_env dbplyr lazy table or data.frame with environmental data
 #' @param env_stat Character string specifying aggregation function (e.g., "mean", "median")
-#' @param max_hours_diff Numeric maximum time difference (in hours) for matching observations (default: 72)
-#' @param max_meters_diff Numeric maximum spatial distance (in meters) for matching observations (default: 1000)
+#' @param max_hours_diff Numeric maximum time difference (in hours) for matching observations (default: 6)
+#' @param max_meters_diff Numeric maximum spatial distance (in meters) for matching observations (default: 2000)
 #'
 #' @return data.frame with matched species-environment observations
 #'
@@ -662,7 +663,7 @@ prep_ts_env <- function(df_env, ts_res) {
 #'
 #' @export
 prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
-                       max_hours_diff = 72, max_meters_diff = 1000) {
+                       max_hours_diff = 6, max_meters_diff = 2000) {
 
   # prepare species data
   d_sp <- df_sp |>

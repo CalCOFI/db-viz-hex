@@ -752,8 +752,8 @@ server <- function(input, output, session) {
         } else if (i == "int") {
           req(rx$df_sp, rx$df_env)
 
-          max_hours_diff <- input$time_window %||% 72
-          max_meters_diff <- input$dist_window %||% 1000
+          max_hours_diff  <- input$time_window %||% default_max_hours_diff
+          max_meters_diff <- input$dist_window %||% default_max_meters_diff
 
           d_sp <- rx$df_sp |>
             select(
@@ -813,8 +813,8 @@ server <- function(input, output, session) {
           data <- rx$df_splot %||%
             prep_splot(rx$df_sp, rx$df_env, "mean",
                        method = input$splot_method %||% "nearest_time",
-                       max_hours_diff = input$splot_max_hours_diff %||% 72,
-                       max_meters_diff = input$splot_max_meters_diff %||% 1000)
+                       max_hours_diff  = input$splot_max_hours_diff %||% default_max_hours_diff,
+                       max_meters_diff = input$splot_max_meters_diff %||% default_max_meters_diff)
 
           write_data(data, "scatterplot.csv")
 
