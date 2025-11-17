@@ -48,6 +48,57 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
     tibble()
 }
 
+
+get_taxon_parentage <- function(taxonID, con, authority = "worms"){
+
+  query_sql <- glue("
+    WITH RECURSIVE taxon_hierarchy AS (
+      -- Base case: find the initial taxon (and resolve to accepted if it's a synonym)
+      SELECT
+        taxonID,
+        acceptedNameUsageID,
+        parentNameUsageID,
+        scientificName,
+        scientificNameAuthorship,
+        taxonRank,
+        taxonomicStatus,
+        nomenclaturalStatus,
+        namePublishedInYear,
+        0 as level
+      FROM taxonomy
+      WHERE taxonID = ?
+
+      UNION ALL
+
+      -- Recursive case: find parent taxa (using the accepted parent)
+      SELECT
+        t.taxonID,
+        t.acceptedNameUsageID,
+        t.parentNameUsageID,
+        t.scientificName,
+        t.scientificNameAuthorship,
+        t.taxonRank,
+        t.taxonomicStatus,
+        t.nomenclaturalStatus,
+        t.namePublishedInYear,
+        th.level + 1 as level
+      FROM taxonomy t
+      INNER JOIN taxon_hierarchy th ON t.taxonID = th.parentNameUsageID
+      -- Ensure we're getting the accepted version of the parent
+      WHERE t.taxonID = t.acceptedNameUsageID  -- Only accepted taxa (not synonyms)
+        AND th.level < 50  -- Safety limit
+    )
+    SELECT * FROM taxon_hierarchy
+    ORDER BY level, taxonRank")
+
+  dbGetQuery(con, query_sql, params = list(taxonID)) |>
+    mutate(
+      authority           = !!authority,
+      namePublishedInYear = as.character(namePublishedInYear)) |>
+    relocate(authority) |>
+    tibble()
+}
+
 #' Retrieve Species Larval Abundance Data from Database
 #'
 #' Queries species, larva, net, tow, and site tables with temporal filters,
@@ -122,7 +173,7 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
       mutate(
         children = map(worms_id, get_taxon_children, con = con) ) |>
       unnest(children) |>
-      select(name, depth_level, taxonRank, worms_id = acceptedNameUsageID)
+      select(name, depth_level, taxonRank, worms_id = acceptedNameUsageID, parent_id = parentNameUsageID)
 
     df_sp <- tbl(con, "species") |>
       inner_join(
@@ -766,16 +817,17 @@ prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
 #'
 #' @export
 prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
-                                sel_depth_range, drawn_polygon, selected_grid_zones) {
+                                sel_depth_range, drawn_polygon, selected_grid_zones,
+                                ck_children) {
   filter_list <- list()
 
   # species
   if (!is.null(sel_name) && length(sel_name) > 0) {
     filter_list <- c(filter_list,
-                     if (length(sel_name) <= 3) {
-                       paste0("**Species:** ", paste(sel_name, collapse = ", "))
+                     if (length(sel_name) <= 10) {
+                       paste0("**Taxa:** ", paste(sel_name, collapse = ", "))
                      } else {
-                       paste0("**Species:** ", length(sel_name), " selected")
+                       paste0("**Taxa:** ", length(sel_name), " selected")
                      }
     )
   }
@@ -809,23 +861,118 @@ prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
     filter_list <- c(filter_list, "**Spatial:** All locations")
   }
 
+  # taxonomic children
+  filter_list <- c(filter_list, paste0("**Include Children:** ", ifelse(ck_children, "Yes", "no")))
+
   return(filter_list)
 }
 
 prep_summary_stats <- function(df_sp, df_env) {
+
   stat_list <- list()
 
   stat_list <- c(stat_list, "**Species Data**")
 
-  stat_list <- c(stat_list, paste0(nrow(df_sp |> collect()), " observations"))
+  stat_list <- c(stat_list, paste0(nrow(df_sp |> collect()) |> format(big.mark = ','), " observations"))
 
   stat_list <- c(stat_list, "\n**Environmental Data**")
 
-  stat_list <- c(stat_list, paste0(nrow(df_env |> collect()), " observations"))
+  stat_list <- c(stat_list, paste0(nrow(df_env |> collect()) |> format(big.mark = ','), " observations"))
 
   return(stat_list)
 }
 
+taxa_tree_builder <- function(df_sp) {
+  # get taxa names
+  names <- unique(df_sp |> pull(name))
+
+  # get counts by taxa in data
+  df_counts <- df_sp |>
+    summarize(
+      n = sum(!is.na(std_tally)),
+      .by = c(worms_id, parent_id)) |>
+    collect()
+
+  # build data.tree of taxa
+  tree_counts <- tbl(con, "species") |>
+    left_join(
+      tbl(con, "taxonomy") |>
+        filter(authority == "worms"),
+      by = join_by(worms_id == taxonID)) |>
+    mutate(
+      name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
+    filter(name %in% names) |>
+    select(name, worms_id) |>
+    collect() |>
+    # get children of user-selected taxa
+    mutate(
+      children = map(worms_id, get_taxon_children, con = con) ) |>
+    unnest(children) |>
+    select(worms_id = acceptedNameUsageID, parent_id = parentNameUsageID, sci_name = scientificName) |>
+    unique() |>
+    # combine with observation counts
+    left_join(
+      df_counts, by = join_by(worms_id, parent_id)
+    ) |>
+    mutate(
+      parent_id = ifelse(!(parent_id %in% worms_id), 0, parent_id),
+      sci_name = paste0("<i>", sci_name, "</i>"),
+      n = ifelse(is.na(n),0,n)
+    ) |>
+    # transform to data.tree
+    FromDataFrameNetwork()
+
+  # aggregate counts and add leaves for unidentified observations
+  tree_counts$Do(function(node) {
+    if (!isLeaf(node)) {
+      unident_n <- node$n %||% 0
+      if (unident_n > 0) {
+        child <- node$AddChild("Unidentified")
+        child$sci_name  <-  paste0("Unidentified ", node$sci_name)
+        child$n                <-  unident_n
+      }
+      node$n <- Aggregate(node, "n", sum)
+    }
+  }, traversal = "post-order")
+
+  # remove taxa with no observations
+  Prune(tree_counts, function(node) {node$n > 0})
+
+  # helper function to transform nodes to HTML <li>
+  makeTreeItem <- function(node) {
+    id <- paste0("node_", gsub("[^A-Za-z0-9_]", "_", node$path))
+
+    # Flex container for name + obs
+    label_inner <- tags$span(
+      class = "tree-label-inner",
+      tags$span(class = "tree-name",  HTML(node$sci_name %||% node$name)),
+      tags$span(class = "tree-obs",   HTML(format(node$n, big.mark = ",")  %||% ""))
+    )
+
+    if (length(node$children) == 0) {
+      tags$li(
+        class = "tree-leaf",
+        tags$span(class = "tree-label", label_inner)
+      )
+    } else {
+      tags$li(
+        class = "tree-branch",
+        tags$input(type = "checkbox", id = id, class = "tree-toggle"),
+        tags$label(`for` = id, class = "tree-label", label_inner),
+        tags$ul(lapply(node$children, makeTreeItem))
+      )
+    }
+  }
+
+  # helper function to make full HTML tree
+  makeTree <- function(root) {
+    tags$ul(class = "treeview", lapply(root$children, makeTreeItem))
+  }
+
+  taxa_tree_html <- makeTree(tree_counts)
+
+  return(taxa_tree_html)
+}
 
 # visualization functions ----
 
@@ -869,7 +1016,9 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
 
   sp_map <- maplibre(
     style = carto_style(ifelse(is_dark, "dark-matter", "voyager"))) |>
-    fit_bounds(bbox = st_as_sf(sp_hex_list[[1]]))
+    fit_bounds(bbox = st_as_sf(sp_hex_list[[1]])) |>
+    add_scale_control(position = "top-left", unit = "metric") |>
+    add_navigation_control()
 
   # add each resolution layer individually
   for (i in 1:length(res_range)) { # i = 1
@@ -885,15 +1034,15 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
         tooltip          = "tooltip")
   }
 
-  sp_map <- sp_map |>
-    add_legend(
-      "Avg. Abundance (count/10m^2)",
-      values   = round(sp_scale_list[[1]]$breaks),
-      colors   = sp_scale_list[[1]]$colors,
-      type     = "continuous",
-      position = "bottom-left") |>
-    add_scale_control(position = "top-left", unit = "metric") |>
-    add_navigation_control()
+  if (FALSE) {
+    sp_map <- sp_map |>
+      add_legend(
+        "Avg. Abundance (count/10m^2)",
+        values   = round(sp_scale_list[[1]]$breaks),
+        colors   = sp_scale_list[[1]]$colors,
+        type     = "continuous",
+        position = "bottom-left")
+  }
 
   return(sp_map)
 }
@@ -939,7 +1088,9 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
   # create base map
   env_map <- maplibre(
     style = carto_style(ifelse(is_dark, "dark-matter", "voyager"))) |>
-    fit_bounds(bbox = st_as_sf(env_hex_list[[1]]))
+    fit_bounds(bbox = st_as_sf(env_hex_list[[1]])) |>
+    add_scale_control(position = "top-left", unit = "metric") |>
+    add_navigation_control()
 
   # add each resolution layer individually
   for (i in 1:length(res_range)) { # i = 1
@@ -956,14 +1107,15 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
   }
 
   # add legend
-  env_map <- env_map |>
-    add_legend(
-      paste(env_stat_label, env_var_label),
-      values   = signif(env_scale_list[[1]]$breaks, 2),
-      colors   = env_scale_list[[1]]$colors,
-      type     = "continuous",
-      position = "bottom-right") |>
-    add_navigation_control()
+  if (FALSE) {
+    env_map <- env_map |>
+      add_legend(
+        paste(env_stat_label, env_var_label),
+        values   = signif(env_scale_list[[1]]$breaks, 2),
+        colors   = env_scale_list[[1]]$colors,
+        type     = "continuous",
+        position = "bottom-right")
+  }
 
   return(env_map)
 }
@@ -1001,7 +1153,7 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
 #' @importFrom dplyr mutate bind_rows arrange distinct filter
 #'
 #' @export
-plot_ts <- function(sp_ts, env_ts, ts_res, sel_env_var) {
+plot_ts <- function(sp_ts, env_ts, ts_res, sel_env_var, is_dark = T) {
   # add a 'panel' and consistent 'name' column to each dataset
   sp_ts_mod <- sp_ts |>
     mutate(panel_id = 0) # assign to the first (top) panel
@@ -1042,6 +1194,8 @@ plot_ts <- function(sp_ts, env_ts, ts_res, sel_env_var) {
     xaxis_label_format <- "{value:%b %e, %Y}"
   }
 
+  text_color <- ifelse(is_dark, "#dee2e6", "#333333")
+
   # initialize the chart with its layout
   hc <- highchart() |>
     hc_chart(zoomType = "x") |>
@@ -1053,10 +1207,21 @@ plot_ts <- function(sp_ts, env_ts, ts_res, sel_env_var) {
         )
       )
     ) |>
-    hc_xAxis(type = "datetime", crosshair = TRUE) |>
+    hc_xAxis(
+      type = "datetime", crosshair = TRUE,
+      labels = list(style = list(color = text_color))) |>
     hc_yAxis_multiples(
-      list(title = list(text = "Average Species Abundance"), height = "47%", top = "0%", offset = 0),
-      list(title = list(text = paste0("Average ", names(which(env_var_choices == sel_env_var)))), height = "47%", top = "53%", offset = 0)
+      list(
+        title = list(text = "Average Species Abundance", style = list(color = text_color)),
+        height = "47%", top = "0%", offset = 0,
+        labels = list(style = list(color = text_color)),
+        gridLineColor = ifelse(is_dark, "#424242", "#e6e6e6")),
+      list(
+        title = list(text = paste0("Average ", names(which(env_var_choices == sel_env_var))),
+                     style = list(color = text_color)),
+        height = "47%", top = "53%", offset = 0,
+        labels = list(style = list(color = text_color)),
+        gridLineColor = ifelse(is_dark, "#424242", "#e6e6e6"))
     )
 
   # configure xAxis based on resolution
@@ -1130,7 +1295,11 @@ plot_ts <- function(sp_ts, env_ts, ts_res, sel_env_var) {
         showInLegend = FALSE
       )
     ) |>
-    hc_legend(enabled = TRUE)
+    hc_legend(
+      enabled = TRUE,
+      itemStyle = list(color = text_color),
+      itemHoverStyle  = list(color = ifelse(is_dark, "#ffffff", "#000000")),
+      itemHiddenStyle = list(color = ifelse(is_dark, "#666666", "#cccccc")))
 
   # loop through each series to add its line and ribbon
   for (i in 1:nrow(series_list)) {
@@ -1258,8 +1427,16 @@ modal_data <- function() {
       nav_panel(
         "Spatial",
         br(),
-        "Select pre-defined zones by clicking on the grid, or draw a custom polygon. Click selected zones again to deselect them.",
-        maplibreOutput("spatial_filter_map", height = "400px")
+        "Select pre-defined zones by clicking on the map or table. Click selected zones again to deselect them. Alternatively, use the \"Custom\" category to drawn your own region of interest.",
+        selectInput(
+          "sel_places_cat",
+          tags$b("Category"),
+          selected = "CalCOFI Zones",
+          c(unique(cc_places$category), "Custom")),
+        fluidRow(
+          column(6, maplibreOutput("spatial_filter_map", height = "400px")),
+          column(6, dataTableOutput("tbl_places") )
+        )
       ),
     ),
 
@@ -1268,7 +1445,7 @@ modal_data <- function() {
       input_task_button("submit", "Submit") ),
 
 
-    size = "l",
+    size = "xl",
     fade = FALSE
   )
 }

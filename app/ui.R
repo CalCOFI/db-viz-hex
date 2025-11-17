@@ -7,7 +7,94 @@ ui <- page_sidebar(
         href = "https://calcofi.io"),
       "Integrated App")),
 
-  tags$head(includeHTML("google-analytics.html")),
+  tags$head(
+    includeHTML("google-analytics.html"),
+    tags$style(HTML("
+    .treeview {
+      list-style: none;
+      padding-left: 0.1rem;
+      margin: 0;
+      margin-top: 0;
+      font-size: 0.9rem;
+    }
+
+    .treeview ul {
+      list-style: none;
+      margin: 0;
+      padding-left: 1.1rem;
+    }
+
+    .treeview li {
+      position: relative;
+      margin: 0.15rem 0;
+      padding: 0;
+    }
+
+    .tree-label {
+      font-weight: 400;
+      cursor: pointer;
+      display: block;
+      padding-left: 1.0rem; /* space for triangle icon */
+    }
+
+    /* Flex layout inside the label for name vs obs */
+    .tree-label-inner {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.5rem;
+      width: 100%;
+    }
+
+    /* Name and obs styling */
+    .tree-name i {
+      font-style: italic;
+    }
+
+    .tree-obs {
+      white-space: nowrap;
+    }
+
+    /* Checkbox used as toggle (invisible) */
+    .tree-toggle {
+      position: absolute;
+      left: 0;
+      top: 0.15rem;
+      width: 1rem;
+      height: 1rem;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    /* Triangles for branches only */
+    .tree-branch > .tree-label::before {
+      content: '\\25B8'; /* right-pointing triangle */
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1rem;
+      text-align: center;
+      font-size: 1.0rem;
+    }
+
+    /* Expanded state */
+    .tree-branch > .tree-toggle:checked + .tree-label::before {
+      content: '\\25BE'; /* down-pointing triangle */
+    }
+
+    /* Children visibility */
+    .tree-branch > .tree-toggle + .tree-label + ul {
+      display: none;
+    }
+    .tree-branch > .tree-toggle:checked + .tree-label + ul {
+      display: block;
+    }
+
+    /* Hover state for consistency with other sidebar text */
+    .tree-label:hover {
+      /* color: #000; */
+    }
+    ")) ),
 
   useConductor(),
   useBusyIndicators(spinners = TRUE, fade = TRUE),
@@ -36,34 +123,52 @@ ui <- page_sidebar(
 
       accordion_panel(
         "Summary Statistics",
-        uiOutput("summary_statistics") ),
+        uiOutput("summary_statistics"),
+        uiOutput("taxa_tree") ),
 
-      accordion_panel(
-        "Plot Options",
+      conditionalPanel(
+        "input.outputPanel === 'Map' || input.outputPanel === 'Time Series' || input.outputPanel === 'Scatterplot'",
+        accordion_panel(
+          "Plot Options",
 
-        conditionalPanel(
-          "input.outputPanel === 'Map'",
-          uiOutput("map_env_stat") ),
+          conditionalPanel(
+            "input.outputPanel === 'Map'",
+            selectInput(
+              "sel_env_stat",
+              "Environmental Summary Statistic",
+              choices  = env_stat_choices,
+              selected = "mean") ),
 
-        conditionalPanel(
-          "input.outputPanel === 'Time Series'",
-          uiOutput("ts_res") ),
+          conditionalPanel(
+            "input.outputPanel === 'Time Series'",
+            selectInput(
+              "sel_ts_res",
+              "Temporal Resolution",
+              choices  = ts_res_choices,
+              selected = "year") ),
 
-        conditionalPanel(
-          "input.outputPanel === 'Scatterplot'",
-          numericInput("splot_max_hours_diff", "Time Window (Hrs.)",   value = default_max_hours_diff,  min = 0, max = 72),
-          numericInput("splot_max_meters_diff", "Distance Window (m)", value = default_max_meters_diff, min = 0, max = 5000),
-          selectInput("splot_method",
-                      tagList("Join Method",
-                              tooltip(bs_icon("question-circle"),
-                                      # Wrap the content in HTML() to enable HTML formatting
-                                      HTML("Specify how <strong>environmental observations</strong> within the time and distance windows should be joined to the species observations.<br>
-                                            <strong>Single Nearest Cast:</strong> Averages observations in the nearest cast (in time or distance).<br>
-                                            <strong>Average Within Range:</strong> Averages all observations within the chosen window.")) ),
-                      c("Single nearest cast (by time)"      =  "nearest_time",
-                        "Single nearest cast (by distance)"  =  "nearest_dist",
-                        "Average within range"               =  "average"),
-                      selected = "nearest_time")))) ),
+          conditionalPanel(
+            "input.outputPanel === 'Scatterplot'",
+            numericInput("splot_max_hours_diff",
+                         tagList("Time Window (Hrs.)",
+                                 popover(bs_icon("question-circle"),
+                                         "The default thresholds of 2 km and 6 hours to match CTD casts and net tows for larval fish have been selected to represent approximate spatial and temporal scales within a single tidal cycle and over which water masses are expected to remain broadly similar (although this assumption may vary depending on proximity to coastal fronts or distance from shore). The 2 km threshold also falls within the typical range of potential station drift and/or delay between CTD casts and net tows during sampling operations. Additionally, all stations are spaced farther apart than 2km.")),
+                                 value = default_max_hours_diff,  min = 0, max = 72),
+            numericInput("splot_max_meters_diff",
+                         tagList("Distance Window (m)",
+                                 popover(bs_icon("question-circle"),
+                                         "The default thresholds of 2 km and 6 hours to match CTD casts and net tows for larval fish have been selected to represent approximate spatial and temporal scales within a single tidal cycle and over which water masses are expected to remain broadly similar (although this assumption may vary depending on proximity to coastal fronts or distance from shore). The 2 km threshold also falls within the typical range of potential station drift and/or delay between CTD casts and net tows during sampling operations. Additionally, all stations are spaced farther apart than 2km.")),
+                         value = default_max_meters_diff, min = 0, max = 5000),
+            selectInput("splot_method",
+                        tagList("Join Method",
+                                popover(bs_icon("question-circle"),
+                                        HTML("Specify how <strong>environmental observations</strong> within the time and distance windows should be joined to the species observations.<br>
+                                              <strong>Single Nearest Cast:</strong> Averages observations in the nearest cast (in time or distance).<br>
+                                              <strong>Average Within Range:</strong> Averages all observations within the chosen window.")) ),
+                        c("Single nearest cast (by time)"      =  "nearest_time",
+                          "Single nearest cast (by distance)"  =  "nearest_dist",
+                          "Average within range"               =  "average"),
+                        selected = "nearest_time"))))) ),
 
   # main content ----
   navset_card_underline(
@@ -122,11 +227,13 @@ ui <- page_sidebar(
               numericInput(
                 "dist_window",
                 "Distance window (meters)",
-                value = 1000,
+                value = default_max_meters_diff,
                 min   = 0,
                 width = 200
               ) ) ),
-          helpText("These windows define the tolerance for joining environmental and species data."),
+          helpText(tagList("These windows define the tolerance for joining environmental and species data.",
+                           popover(bs_icon("question-circle"),
+                                   "The default thresholds of 2 km and 6 hours to match CTD casts and net tows for larval fish have been selected to represent approximate spatial and temporal scales within a single tidal cycle and over which water masses are expected to remain broadly similar (although this assumption may vary depending on proximity to coastal fronts or distance from shore). The 2 km threshold also falls within the typical range of potential station drift and/or delay between CTD casts and net tows during sampling operations. Additionally, all stations are spaced farther apart than 2km.")))
         )
       ),
       checkboxGroupInput(

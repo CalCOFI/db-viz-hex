@@ -15,11 +15,31 @@ server <- function(input, output, session) {
     lbl_env_var    = NULL,  # stores the label (e.g., "Temperature (ºC)")
     sel_zones      = NULL,
     map_sp         = NULL,
+    sp_scale       = NULL,  # scale list for sp map
+    env_scale      = NULL,  # scale list for env map
     df_splot       = NULL,
     df_dprof       = NULL,
     filter_summary = NULL,
     summary_stats  = NULL,
-    plot_depth     = NULL)
+    plot_depth     = NULL,
+    params = list( # filter/analysis params
+      taxa             = default_sp_name,
+      env_var          = "t_deg_c",
+      quarters         = 1:4,
+      date_range       = min_max_date,
+      depth_range      = c(0, 212),
+      include_children = TRUE,
+      zones            = NULL,
+      time_window      = NULL,
+      dist_window      = NULL,
+      map_params       = list(env_stat   = NULL),
+      ts_params        = list(ts_res     = NULL),
+      splot_params     = list(time_window = NULL,
+                              dist_window = NULL,
+                              method      = NULL),
+      dprof_params     = list(transect   = NULL,
+                              buffer     = NULL)
+    ))
 
   # session.once -> ... ----
   observeEvent(session$clientData, once = TRUE, {
@@ -54,6 +74,12 @@ server <- function(input, output, session) {
       rx$df_env      <- df_env
       rx$env_var     <- sel_env_var
       rx$lbl_env_var <- names(which(env_var_choices == sel_env_var))
+      rx$params$taxa        <- sel_name
+      rx$params$env_var     <- sel_env_var
+      rx$params$sel_qtr     <- sel_qtr
+      rx$params$date_range  <- sel_date_range
+      rx$params$depth_range <- sel_depth_range
+      rx$params$ck_children <- ck_children
 
       # build filter summary
       rx$filter_summary <- prep_filter_summary(
@@ -63,7 +89,8 @@ server <- function(input, output, session) {
         sel_date_range,
         sel_depth_range,
         drawn_polygon = NULL,
-        rx$sel_zones)
+        rx$sel_zones,
+        ck_children)
 
       # summary statistics
       rx$summary_stats <- prep_summary_stats(
@@ -80,6 +107,7 @@ server <- function(input, output, session) {
         column  = "sp.value",
         palette = \(n) hcl.colors(n, palette = "Viridis"))
       rx$map_sp <- map_sp(sp_hex_list, sp_scale_list)
+      rx$sp_scale <- sp_scale_list
       if (debug) message("Default species map generated and stored in rx$map_sp\n")
 
       # reset depth profile
@@ -168,6 +196,9 @@ server <- function(input, output, session) {
       env_stat_label,
       rx$lbl_env_var)
 
+    rx$env_scale <- env_scale_list
+    rx$params$map_params$env_stat <- env_stat
+
     if (debug) {
       message("renderMaplibreCompare: creating comparison map")
       message("rx$map_sp class: ", paste(class(rx$map_sp), collapse = ", "))
@@ -194,6 +225,54 @@ server <- function(input, output, session) {
       set_style(carto_style(style))
   })
 
+  # map zoom ----
+  observeEvent(input$map_before_view, {
+    req(rx$sp_scale, rx$env_scale)
+
+    view <- input$map_before_view
+    req(view$zoom)
+
+    z <- view$zoom
+    i <- findInterval(z, zoom_breaks, rightmost.closed = TRUE)
+
+    # Guard against weird zoom values
+    if (i < 1 || i > length(rx$sp_scale)) return(NULL)
+
+    sp_scale  <- rx$sp_scale[[i]]
+    env_scale <- rx$env_scale[[i]]
+
+    env_stat <- input$sel_env_stat %||% "mean"
+    lbl_env_stat <- names(which(env_stat_choices == env_stat))
+
+    # Species legend (left / before)
+    maplibre_compare_proxy("map", map_side = "before") |>
+      add_legend(
+        legend_title = "Avg. Abundance (count / 10 m2)",
+        values       = round(sp_scale$breaks, 2),
+        colors       = sp_scale$colors,
+        type         = "continuous",
+        position     = "bottom-left",
+        width        = "275px",
+        target       = "compare",
+        style        = legend_style(background_opacity = 0.5),
+        add          = FALSE
+      )
+
+    # Environmental legend (right / after)
+    maplibre_compare_proxy("map", map_side = "after") |>
+      add_legend(
+        legend_title = paste(lbl_env_stat, rx$lbl_env_var),
+        values       = signif(env_scale$breaks, 4),
+        colors       = env_scale$colors,
+        type         = "continuous",
+        position     = "bottom-right",
+        width        = "275px",
+        target       = "compare",
+        style        = legend_style(background_opacity = 0.5),
+        add         = TRUE
+      )
+  })
+
   # ts_plot ----
   output$ts_plot <- renderHighchart({
     req(rx$df_sp, rx$df_env, rx$env_var)
@@ -204,7 +283,9 @@ server <- function(input, output, session) {
     sp_ts  <- prep_ts_sp(rx$df_sp, ts_res) |> arrange(time)
     env_ts <- prep_ts_env(rx$df_env, ts_res)
 
-    plot_ts(sp_ts, env_ts, ts_res, rx$env_var)
+    rx$params$ts_params$ts_res <- ts_res
+
+    plot_ts(sp_ts, env_ts, ts_res, rx$env_var, input$dark_toggle == "dark")
   })
 
   # splot ----
@@ -214,6 +295,11 @@ server <- function(input, output, session) {
                            max_hours_diff = input$splot_max_hours_diff,
                            max_meters_diff = input$splot_max_meters_diff)
     rx$df_splot <- df_splot
+    rx$params$splot_params <- list(
+      time_window = input$splot_max_hours_diff,
+      dist_window = input$splot_max_meters_diff,
+      method      = input$splot_method
+    )
 
     req(rx$df_splot)
 
@@ -243,9 +329,7 @@ server <- function(input, output, session) {
       labs(
         x     = rx$lbl_env_var,
         y     = "Species Abundance",
-        color = "Species") +
-      theme(legend.position="none") # +
-    # theme_minimal()
+        color = "Species")
 
     # convert to plotly with bslib theme support
     ggplotly(p, tooltip = "text", source = "scatterPlotSource") |>
@@ -263,73 +347,97 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, 'sel_name', choices = sp_names, server = TRUE)
 
     output$spatial_filter_map <- renderMaplibre({
-      maplibre(
-        style = carto_style('positron'),
-        bounds = cc_grid_zones) |>
-        add_fill_layer(
-          id = 'base-zones',
-          cc_grid_zones,
-          fill_color = match_expr(
-            "zone_key",
-            values = unique(cc_grid_zones$zone_key),
-            stops = hcl.colors(length(unique(cc_grid_zones$zone_key)))),
-          fill_opacity = 0.5,
-          fill_outline_color = "black") |>
-        add_fill_layer(
-          id = 'sel-zones',
-          cc_grid_zones,
-          fill_color = match_expr(
-            "zone_key",
-            values = unique(cc_grid_zones$zone_key),
-            stops = hcl.colors(length(unique(cc_grid_zones$zone_key)))),
-          fill_opacity = 0.0,
-          fill_outline_color = NULL) |>
-        add_line_layer(
-          id = 'sel-zones-outline',
-          cc_grid_zones,
-          line_color = 'black',
-          line_width = 3,
-          line_opacity = 0.0) |>
-        add_categorical_legend(
-          legend_title = "Zone Key",
-          values = unique(cc_grid_zones$zone_key),
-          colors = hcl.colors(length(unique(cc_grid_zones$zone_key)))) |>
-        add_draw_control(
-          position = "top-right",
-          displayControlsDefault = FALSE,
-          controls = list(polygon = TRUE, trash = TRUE))})
+      if (input$sel_places_cat == "Custom") {
+        maplibre(
+          style = carto_style(ifelse(
+            input$dark_toggle == "dark",
+            "dark-matter",
+            "voyager"))) |>
+          add_draw_control(
+            position = "top-right",
+            displayControlsDefault = FALSE,
+            controls = list(polygon = TRUE, trash = TRUE))
+      } else {
+        places <- cc_places |>
+          filter(
+            category == input$sel_places_cat
+          )
+
+        maplibre(
+          style = carto_style(ifelse(
+            input$dark_toggle == "dark",
+            "dark-matter",
+            "voyager")),
+          bounds = places) |>
+          add_fill_layer(
+            id = 'base-zones',
+            places,
+            fill_color = match_expr(
+              "name",
+              values = unique(places$name),
+              stops = hcl.colors(length(unique(places$name)))),
+            fill_opacity = 0.5,
+            fill_outline_color = "black") |>
+          add_fill_layer(
+            id = 'sel-zones',
+            places,
+            fill_color = match_expr(
+              "name",
+              values = unique(places$name),
+              stops = hcl.colors(length(unique(places$name)))),
+            fill_opacity = 0.0,
+            fill_outline_color = NULL) |>
+          add_line_layer(
+            id = 'sel-zones-outline',
+            places,
+            line_color = ifelse(input$dark_toggle == "dark", "#dee2e6", "#333333"),
+            line_width = 3,
+            line_opacity = 0.0)
+      }
+     })
+
+    output$tbl_places <- renderDataTable({
+      cc_places |>
+        as.data.frame() |>
+        filter(
+          category == input$sel_places_cat
+        ) |>
+        select(name)
+    })
   })
 
   # Observe clicks on the grid layer of spatial filter map
   observeEvent(input$spatial_filter_map_feature_click, {
 
+    custom <- input$sel_places_cat == "Custom"
+
     click <- input$spatial_filter_map_feature_click
 
     # Only process clicks on the grid layer
-    if (!is.null(click$properties$zone_key) ) {
-      clicked_zone <- click$properties$zone_key
-      current_zones <- rx$sel_zones
+    if (!is.null(click$properties$name) & !custom) {
+      clicked_place <- click$properties$name
+      current_places <- rx$sel_places
 
       # Toggle zone selection
-      if (clicked_zone %in% current_zones) {
+      if (clicked_place %in% current_places) {
         # Remove if already selected
-        new_zones <- setdiff(current_zones, clicked_zone)
+        new_places <- setdiff(current_places, clicked_place)
       } else {
         # Add to selection
-        new_zones <- c(current_zones, clicked_zone)
+        new_places <- c(current_places, clicked_place)
       }
 
-      rx$sel_zones <- new_zones
+      rx$sel_places <- new_places
 
       # Update map styling to highlight selected zones
-      if (length(new_zones) > 0) {
+      if (length(new_places) > 0) {
         maplibre_proxy("spatial_filter_map") |>
           set_filter("sel-zones",
-                     list("in", list("get", "zone_key"), list("literal", new_zones))) |>
+                     list("in", list("get", "name"), list("literal", new_places))) |>
           set_paint_property("sel-zones", "fill-opacity", 0.8) |>
           set_paint_property("sel-zones", "fill-outline-color", "black") |>
           set_filter("sel-zones-outline",
-                     list("in", list("get", "zone_key"), list("literal", new_zones))) |>
+                     list("in", list("get", "name"), list("literal", new_places))) |>
           set_paint_property("sel-zones-outline", "line-opacity", 1.0)
       } else {
         # Reset filter if no zones selected
@@ -338,8 +446,55 @@ server <- function(input, output, session) {
           set_paint_property("sel-zones", "fill-outline-color", NULL) |>
           set_paint_property("sel-zones-outline", "line-opacity", 0.0)
       }
+
+      # Update table row selection
+      places_tbl <- cc_places |>
+        filter(category == input$sel_places_cat)
+      rows_to_select <- which(places_tbl$name %in% new_places)
+
+      tbl_proxy <- dataTableProxy("tbl_places")
+      selectRows(tbl_proxy, rows_to_select)
     }
   })
+
+  # Observe clicks on table rows
+  observeEvent(input$tbl_places_rows_selected, {
+    req(input$sel_places_cat)
+
+    sel_rows <- input$tbl_places_rows_selected
+
+    places_tbl <- cc_places |>
+      filter(category == input$sel_places_cat)
+
+    if (is.null(sel_rows) || length(sel_rows) == 0) {
+      new_places <- character(0)
+      rx$sel_places <- character(0)
+    } else {
+      # Map selected rows to keys
+      new_places <- places_tbl$name[sel_rows]
+
+      # Update reactive selection
+      rx$sel_places <- new_places
+    }
+
+    # Update map styling to highlight selected zones
+    if (length(new_places) > 0) {
+      maplibre_proxy("spatial_filter_map") |>
+        set_filter("sel-zones",
+                   list("in", list("get", "name"), list("literal", new_places))) |>
+        set_paint_property("sel-zones", "fill-opacity", 0.8) |>
+        set_paint_property("sel-zones", "fill-outline-color", "black") |>
+        set_filter("sel-zones-outline",
+                   list("in", list("get", "name"), list("literal", new_places))) |>
+        set_paint_property("sel-zones-outline", "line-opacity", 1.0)
+    } else {
+      # Reset filter if no zones selected
+      maplibre_proxy("spatial_filter_map") |>
+        set_paint_property("sel-zones", "fill-opacity", 0.0) |>
+        set_paint_property("sel-zones", "fill-outline-color", NULL) |>
+        set_paint_property("sel-zones-outline", "line-opacity", 0.0)
+    }
+  }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
   # submit -> ... ----
   observeEvent(input$submit, {
@@ -420,6 +575,14 @@ server <- function(input, output, session) {
     rx$df_env      <- df_env
     rx$env_var     <- sel_env_var
     rx$lbl_env_var <- names(which(env_var_choices == sel_env_var))
+
+    rx$params$taxa        <- sel_name
+    rx$params$env_var     <- sel_env_var
+    rx$params$sel_qtr     <- sel_qtr
+    rx$params$date_range  <- sel_date_range
+    rx$params$depth_range <- sel_depth_range
+    rx$params$zones       <- rx$zones
+    rx$params$ck_children <- ck_children
     if (debug) message("Stored reactive data: df_sp, df_env, lbl_env_var =", rx$lbl_env_var)
 
     # build filter summary
@@ -430,7 +593,14 @@ server <- function(input, output, session) {
       sel_date_range,
       sel_depth_range,
       drawn_polygon,
-      rx$sel_zones)
+      rx$sel_zones,
+      ck_children)
+
+    # build summary stats
+    rx$summary_stats <- prep_summary_stats(
+      rx$df_sp,
+      rx$df_env
+    )
 
     # generate map
     if (debug) message("Generating species map...\n")
@@ -655,6 +825,13 @@ server <- function(input, output, session) {
       )
 
     rx$df_dprof <- list(filt_sp_data, proc_env_data)
+    rx$params$dprof_params <- list(
+      buffer   = input$modal_buffer_dist,
+      transect = paste0(
+        "start = (", round(coords[1, "X"], 4), ", ", round(coords[1, "Y"], 4), ")",
+        "; end = (", round(coords[nrow(coords), "X"], 4), ", ", round(coords[nrow(coords), "Y"], 4), ")"
+      )
+    )
 
     profile_plot <- subplot(
       ggplotly(sp_plot, tooltip = "text"),
@@ -686,23 +863,6 @@ server <- function(input, output, session) {
     rx$plot_depth
   })
 
-  # map_env_stat ----
-  output$map_env_stat <- renderUI({
-    selectInput(
-      "sel_env_stat",
-      "Environmental Summary Statistic",
-      choices  = env_stat_choices,
-      selected = input$sel_env_stat %||% "mean")
-  })
-
-  output$ts_res <- renderUI({
-    selectInput(
-      "sel_ts_res",
-      "Temporal Resolution",
-      choices  = ts_res_choices,
-      selected = input$sel_ts_res %||% "year")
-  })
-
   output$filter_summary <- renderUI({
     req(rx$filter_summary)
     div(class = "small", markdown(paste(rx$filter_summary, collapse = "  \n")))
@@ -712,6 +872,28 @@ server <- function(input, output, session) {
     req(rx$summary_stats)
     div(class = "small", markdown(paste(rx$summary_stats, collapse = "  \n")))
   })
+
+  output$taxa_tree <- renderUI ({
+    req(rx$df_sp)
+
+    tagList(
+      div(
+        id = "taxa-tree-heading",
+        class = "small",
+        style = "margin: 0 !important; padding: 0 !important;",
+        tags$style(HTML("
+          #taxa-tree-heading p {
+            margin-top: 0 !important;
+            margin-bottom: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            line-height: 1.1 !important;
+          }
+        ")),
+        markdown("**Observations by Selected Taxa**")),
+      div(
+        style = "margin-top: 0;",
+        taxa_tree_builder(rx$df_sp))) })
 
   # download_data ----
   output$download_data <- downloadHandler(
@@ -739,6 +921,8 @@ server <- function(input, output, session) {
         paths <<- c(paths, rel_path)       # <<- adds to the outer variable
       }
 
+      rx$params
+
       for (i in all_sel) {
 
         if (i == "raw_sp") {
@@ -754,6 +938,10 @@ server <- function(input, output, session) {
 
           max_hours_diff  <- input$time_window %||% default_max_hours_diff
           max_meters_diff <- input$dist_window %||% default_max_meters_diff
+
+          rx$params$time_window <- max_hours_diff
+          rx$params$dist_window <- max_meters_diff
+
 
           d_sp <- rx$df_sp |>
             select(
@@ -793,9 +981,10 @@ server <- function(input, output, session) {
 
         } else if (i == "map") {
           req(rx$df_sp, rx$df_env)
+          if (is.null(rx$params$map_params$env_stat)) {rx$params$map_params$env_stat <- "mean"}
           sp_hex  <- prep_sp_hex(rx$df_sp, res_range) |> bind_rows() |> select(-tooltip)
           env_hex <- prep_env_hex(rx$df_env, res_range,
-                                  input$map_env_stat %||% "mean") |>
+                                  rx$params$map_params$env_stat) |>
             bind_rows() |> select(-tooltip)
 
           write_data(sp_hex , "map/species_map.csv")
@@ -803,28 +992,89 @@ server <- function(input, output, session) {
 
         } else if (i == "ts") {
           req(rx$df_sp, rx$df_env)
-          sp_ts  <- prep_ts_sp(rx$df_sp, input$sel_ts_res %||% "year")
-          env_ts <- prep_ts_env(rx$df_env, input$sel_ts_res %||% "year")
+          if (is.null(rx$params$ts_params$ts_res)) {rx$params$ts_params$ts_res <- "year"}
+          sp_ts  <- prep_ts_sp(rx$df_sp, rx$params$ts_params$ts_res)
+          env_ts <- prep_ts_env(rx$df_env, rx$params$ts_params$ts_res)
 
           write_data(sp_ts , "time_series/species_ts.csv")
           write_data(env_ts, "time_series/ocean_ts.csv")
 
         } else if (i == "splot") {
+          req(rx$df_sp, rx$df_env)
+
+          if (is.null(method = rx$params$splot_params$method)) {method = rx$params$splot_params$method <- "nearest_time"}
+          if (is.null(rx$params$splot_params$time_window)) {rx$params$splot_params$time_window <- default_max_hours_diff}
+          if (is.null(rx$params$splot_params$dist_window)) {rx$params$splot_params$dist_window <- default_max_meters_diff}
+
           data <- rx$df_splot %||%
             prep_splot(rx$df_sp, rx$df_env, "mean",
-                       method = input$splot_method %||% "nearest_time",
-                       max_hours_diff  = input$splot_max_hours_diff %||% default_max_hours_diff,
-                       max_meters_diff = input$splot_max_meters_diff %||% default_max_meters_diff)
+                       method = rx$params$splot_params$method,
+                       max_hours_diff  = rx$params$splot_params$time_window,
+                       max_meters_diff = rx$params$splot_params$dist_window)
 
           write_data(data, "scatterplot.csv")
 
         } else if (i == "dprof") {
+
           sp_data <- rx$df_dprof[[1]]
           env_data <- rx$df_dprof[[2]]
           write_data(sp_data, "depth_profile/species_dprof.csv")
           write_data(env_data, "depth_profile/env_dprof.csv")
         }
       }
+
+      readme_path <- file.path(zip_root, "README.md")
+
+      params <- isolate(rx$params)
+
+      # Create a YAML-friendly copy
+      yaml_params <- params
+      # Coerce date_range to ISO strings if they are Dates
+      if (inherits(yaml_params$date_range, "Date")) {
+        yaml_params$date_range <- as.character(yaml_params$date_range)
+      }
+
+      yaml_block <- yaml::as.yaml(yaml_params)
+
+      body_lines <- c(
+        "# CalCOFI Download",
+        "",
+        "This archive contains data filtered with the following criteria:",
+        "",
+        glue::glue("- Taxa: {paste(params$taxa, collapse = ', ')}"),
+        glue::glue("- Environmental variable: {params$env_var}"),
+        glue::glue("- Quarters: {paste(params$quarters, collapse = ', ')}"),
+        glue::glue("- Date range: {params$date_range[1]} to {params$date_range[2]}"),
+        glue::glue("- Depth range (m): {params$depth_range[1]}–{params$depth_range[2]}"),
+        glue::glue("- Include children: {params$include_children}"),
+        glue::glue(
+          "- Spatial filter (zones): {if (is.null(params$zones))
+       'All locations' else paste(params$zones, collapse = ', ')}"
+        ),
+        glue::glue("- Integrated join time window (hours): {params$time_window}"),
+        glue::glue("- Integrated join distance window (m): {params$dist_window}"),
+        glue::glue("- Map env statistic: {params$map_params$env_stat}"),
+        glue::glue("- Time series resolution: {params$ts_params$ts_res}"),
+        glue::glue(
+          "- Scatterplot matching: method = {params$splot_params$method}, ",
+          "time_window = {params$splot_params$time_window} hours, ",
+          "dist_window = {params$splot_params$dist_window} m"
+        ),
+        glue::glue("- Depth profile transect: {params$dprof_params$transect %||% 'NA'}"),
+        glue::glue("- Depth profile buffer (km): {params$dprof_params$buffer %||% 'NA'}")
+      )
+
+      md <- c(
+        "---",
+        yaml_block,
+        "---",
+        "",
+        body_lines
+      )
+      writeLines(md, readme_path)
+
+      litedown::mark(readme_path)
+      paths <- c(paths, "README.md", "README.html")
 
       zip::zip(zipfile = file, files = paths, root = zip_root, include_directories = TRUE)
     },

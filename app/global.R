@@ -8,10 +8,10 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 
 # Load libraries
 librarian::shelf(
-  bslib, bsicons, calcofi/calcofi4r, conductor, DBI, dplyr, duckdb, geosphere,
-  ggplot2, glue, here, highcharter, htmltools, htmlwidgets, httr2, leaflet,
-  litedown, lubridate, mapgl, plotly, purrr, readr, sf, shiny, shinyWidgets,
-  stringr, thematic, tibble, tidyr, zip,
+  bslib, bsicons, calcofi/calcofi4r, conductor, data.tree, DBI, dplyr, duckdb,
+  geosphere, ggplot2, glue, here, highcharter, htmltools, htmlwidgets, httr2,
+  leaflet, litedown, lubridate, mapgl, plotly, purrr, readr, sf, shiny,
+  shinyWidgets, stringr, thematic, tibble, tidyr, zip,
   quiet = TRUE)
 
 # variables ----
@@ -141,7 +141,11 @@ ts_res_choices <- list(
 env_var_choices <- list(
   "Temperature (ºC)" = "t_deg_c",
   "Salinity"         = "salnty",
-  "Oxygen (µmol/kg)" = "oxy_umol_kg")
+  "Oxygen (µmol/kg)" = "oxy_umol_kg",
+  "Phosphate (µmol/L)"        = "po4u_m",
+  "Silicate (µmol/L)"         = "si_o3u_m",
+  "Nitrite (µmol/L)"          = "no2u_m",
+  "Nitrate (µmol/L)"          = "no3u_m")
 
 env_stat_choices <- list(
   "Avg."      = "mean",
