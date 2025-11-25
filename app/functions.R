@@ -397,10 +397,10 @@ prep_sp_hex <- function(df_sp, res_range) {
   hex_sp_collected <- combined_res_tbl |>
     group_by(resolution, hex_int) |>
     summarize(
-      sp.value   =  mean(std_tally, na.rm = TRUE),
-      n          =  sum(!is.na(std_tally)),
-      min_dtime  =  min(time_start, na.rm = TRUE),
-      max_dtime  =  max(time_start, na.rm = TRUE),
+      sp.value   =  mean(std_tally, na.rm = T),
+      n          =  sum(std_tally,  na.rm = T),
+      min_dtime  =  min(time_start, na.rm = T),
+      max_dtime  =  max(time_start, na.rm = T),
       .groups = "drop") |>
     filter(
       !is.na(hex_int),
