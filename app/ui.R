@@ -94,6 +94,13 @@ ui <- page_sidebar(
     .tree-label:hover {
       /* color: #000; */
     }
+
+    /* darken maplibre tooltip and popup text for readability */
+    .maplibregl-popup-content,
+    .mapboxgl-popup-content {
+      color: #1a1a1a !important;
+      font-weight: 500;
+    }
     ")) ),
 
   useConductor(),
@@ -102,6 +109,12 @@ ui <- page_sidebar(
   # sidebar ----
   sidebar = sidebar(
     width = 300,
+
+    conditionalPanel(
+      "input.outputPanel === 'Map'",
+      actionButton("btn_layers", "Map Layers",
+                   width = "100%", class = "mb-2",
+                   icon = icon("layer-group")) ),
 
     # action buttons
     actionButton("sel_data", "Select Filters", width = "100%", class = "mb-2", icon = icon("filter")),

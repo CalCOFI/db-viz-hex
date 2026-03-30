@@ -249,6 +249,92 @@ server <- function(input, output, session) {
       set_style(carto_style(style))
   })
 
+  # map layers modal ----
+  # track which spatial layers are enabled
+  rx$spatial_visible <- d_spatial_layers |>
+    filter(default_visible) |>
+    pull(dataset_id)
+
+  observeEvent(input$btn_layers, {
+    # build checkbox groups from registry
+    layer_choices <- split(
+      setNames(d_spatial_layers$dataset_id, d_spatial_layers$name),
+      d_spatial_layers$group)
+
+    showModal(modalDialog(
+      title = "Map Layers",
+      size  = "l",
+      tagList(
+        lapply(names(layer_choices), function(grp) {
+          input_id <- paste0("lyr_", make.names(grp))
+          checkboxGroupInput(
+            input_id,
+            grp,
+            choices  = layer_choices[[grp]],
+            selected = intersect(
+              rx$spatial_visible,
+              layer_choices[[grp]]))
+        })
+      ),
+      footer = tagList(
+        actionButton("btn_layers_apply", "Apply", class = "btn-primary"),
+        modalButton("Cancel"))
+    ))
+  })
+
+  observeEvent(input$btn_layers_apply, {
+    # collect selected layer IDs from all checkbox groups
+    all_groups <- unique(d_spatial_layers$group)
+    selected   <- unlist(lapply(all_groups, function(grp) {
+      input_id <- paste0("lyr_", make.names(grp))
+      input[[input_id]]
+    }))
+    if (is.null(selected)) selected <- character(0)
+
+    rx$spatial_visible <- selected
+
+    # toggle visibility on both sides of compare map
+    polygon_layers <- d_spatial_layers |>
+      filter(geom_type == "polygon") |>
+      pull(dataset_id)
+
+    for (lyr_id in d_spatial_layers$dataset_id) {
+      vis <- ifelse(lyr_id %in% selected, "visible", "none")
+      for (side in c("before", "after")) {
+        maplibre_compare_proxy("map", map_side = side) |>
+          set_layout_property(lyr_id, "visibility", vis)
+        # also toggle outline layer for polygons
+        if (lyr_id %in% polygon_layers) {
+          maplibre_compare_proxy("map", map_side = side) |>
+            set_layout_property(
+              paste0(lyr_id, "_outline"), "visibility", vis)
+        }
+      }
+    }
+
+    # rebuild layers control with updated visible spatial layers
+    sp_hex_ids  <- paste0("sp",  res_range)
+    env_hex_ids <- paste0("env", res_range)
+    ctrl_sp  <- build_layers_control(selected, d_spatial_layers, sp_hex_ids)
+    ctrl_env <- build_layers_control(selected, d_spatial_layers, env_hex_ids)
+
+    maplibre_compare_proxy("map", map_side = "before") |>
+      clear_controls(controls = "layers") |>
+      add_layers_control(
+        position    = "top-right",
+        layers      = ctrl_sp,
+        collapsible = TRUE)
+
+    maplibre_compare_proxy("map", map_side = "after") |>
+      clear_controls(controls = "layers") |>
+      add_layers_control(
+        position    = "top-right",
+        layers      = ctrl_env,
+        collapsible = TRUE)
+
+    removeModal()
+  })
+
   # map zoom ----
   observeEvent(input$map_before_view, {
     req(rx$sp_scale, rx$env_scale)

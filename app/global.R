@@ -10,7 +10,7 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 librarian::shelf(
   bslib, bsicons, calcofi/calcofi4r, conductor, data.tree, DBI, dplyr, duckdb,
   geosphere, ggplot2, glue, here, highcharter, htmltools, htmlwidgets, httr2,
-  leaflet, litedown, lubridate, mapgl, plotly, purrr, readr, sf, shiny,
+  jsonlite, leaflet, litedown, lubridate, mapgl, plotly, purrr, readr, sf, shiny,
   shinyWidgets, stringr, thematic, tibble, tidyr, zip,
   quiet = TRUE)
 
@@ -97,6 +97,17 @@ if (FALSE){ # !file.exists(hex_geo)
   st_write(sf_hex, hex_geo, delete_dsn = T, quiet = T)
 }
 sf_hex <- st_read(hex_geo, quiet = TRUE)
+
+# spatial layers registry ----
+d_spatial_layers <- read_csv(
+  here("../workflows/metadata/spatial_layers.csv"),
+  show_col_types = FALSE)
+# pmtiles_base_url <- "https://file.calcofi.io/_spatial"
+pmtiles_base_url <- "https://storage.googleapis.com/calcofi-files-public/_spatial"
+
+# gcloud storage buckets describe gs://calcofi-files-public --format="/Users/bbest/Github/CalCOFI/int-app/data/_cors_file.json"
+# cd ~/Github/CalCOFI/int-app/data
+# gcloud storage buckets update gs://calcofi-files-public --cors-file=_cors_file.json
 
 # load functions ----
 source(here("app/functions.R"))

@@ -1032,6 +1032,147 @@ taxa_tree_builder <- function(df_sp) {
   return(taxa_tree_html)
 }
 
+# spatial boundary layers ----
+
+#' Add spatial boundary layers from PMTiles sources
+#'
+#' Adds all spatial boundary layers registered in \code{d_spatial_layers}
+#' to a maplibre map. Layers are created hidden by default; visibility
+#' controlled via the layers control or proxy. Includes yellow hover
+#' highlight and tooltip from the \code{tooltip_field} column.
+#'
+#' @param map A maplibre map object
+#' @param d_layers Data frame from \code{metadata/spatial_layers.csv}
+#' @param is_dark Logical; TRUE for dark theme styling
+#'
+#' @return Modified maplibre map with PMTiles sources and layers (no control)
+add_spatial_layers <- function(map, d_layers, visible_ids = NULL, is_dark = TRUE) {
+
+  # determine which layers are visible
+  if (is.null(visible_ids))
+    visible_ids <- d_layers |> filter(default_visible) |> pull(dataset_id)
+
+  # add one pmtiles source per unique dataset_group
+  # promote_id = "id" so setFeatureState works for hover highlighting
+  for (grp in unique(d_layers$dataset_group)) {
+    url <- glue("{pmtiles_base_url}/{grp}.pmtiles")
+    map <- map |>
+      add_pmtiles_source(id = grp, url = url, promote_id = "id")
+  }
+
+  # add one layer per row
+  for (i in seq_len(nrow(d_layers))) {
+    row <- d_layers[i, ]
+    vis <- ifelse(row$dataset_id %in% visible_ids, "visible", "none")
+
+    # parse filter expression if present
+    filt <- if (!is.na(row$filter_expr))
+      jsonlite::fromJSON(row$filter_expr, simplifyVector = FALSE)
+    else
+      NULL
+
+    # tooltip + popup: use tooltip_field column name if available
+    tt <- if ("tooltip_field" %in% names(row) && !is.na(row$tooltip_field))
+      row$tooltip_field
+    else
+      NULL
+
+    if (row$geom_type == "line") {
+      map <- map |>
+        add_line_layer(
+          id            = row$dataset_id,
+          source        = row$dataset_group,
+          source_layer  = row$dataset_group,
+          line_color    = row$line_color,
+          line_width    = row$line_width,
+          line_opacity  = 0.7,
+          visibility    = vis,
+          filter        = filt,
+          tooltip       = tt,
+          popup         = tt,
+          hover_options = list(
+            line_color = "#ffeb3b",
+            line_width = row$line_width + 2))
+
+    } else if (row$geom_type == "polygon") {
+      map <- map |>
+        add_fill_layer(
+          id                 = row$dataset_id,
+          source             = row$dataset_group,
+          source_layer       = row$dataset_group,
+          fill_color         = row$fill_color,
+          fill_opacity       = row$fill_opacity,
+          fill_outline_color = row$line_color,
+          visibility         = vis,
+          filter             = filt,
+          tooltip            = tt,
+          popup              = tt,
+          hover_options      = list(
+            fill_outline_color = "#ffeb3b",
+            fill_opacity       = min(row$fill_opacity + 0.15, 0.6))) |>
+        add_line_layer(
+          id           = paste0(row$dataset_id, "_outline"),
+          source       = row$dataset_group,
+          source_layer = row$dataset_group,
+          line_color   = row$line_color,
+          line_width   = row$line_width,
+          line_opacity = 0.7,
+          visibility   = vis,
+          filter       = filt)
+
+    } else if (row$geom_type == "point") {
+      map <- map |>
+        add_circle_layer(
+          id              = row$dataset_id,
+          source          = row$dataset_group,
+          source_layer    = row$dataset_group,
+          circle_color    = row$fill_color,
+          circle_radius   = 4,
+          circle_opacity  = 0.8,
+          visibility      = vis,
+          filter          = filt,
+          tooltip         = tt,
+          popup           = tt,
+          hover_options   = list(
+            circle_color  = "#ffeb3b",
+            circle_radius = 7))
+    }
+  }
+
+  map
+}
+
+#' Build grouped layers control list for the map
+#'
+#' Constructs the named list for \code{add_layers_control(layers = ...)}
+#' including both visible spatial layers (grouped by category) and
+#' hexagon data summary layers.
+#'
+#' @param visible_ids Character vector of currently visible spatial layer IDs
+#' @param d_layers Full spatial layers registry data frame
+#' @param hex_layer_ids Character vector of hexagon layer IDs (e.g., "sp1".."sp10")
+#'
+#' @return Named list suitable for \code{add_layers_control(layers = ...)}
+build_layers_control <- function(visible_ids, d_layers, hex_layer_ids) {
+  visible <- d_layers |> filter(dataset_id %in% visible_ids)
+
+  # spatial layers grouped by category
+  if (nrow(visible) > 0) {
+    spatial_groups <- split(
+      setNames(visible$dataset_id, visible$name),
+      visible$group)
+  } else {
+    spatial_groups <- list()
+  }
+
+  # add hexagon data summaries as a group
+  ctrl <- c(
+    list("Hexagon Data" = hex_layer_ids),
+    spatial_groups)
+
+  ctrl
+}
+
 # visualization functions ----
 
 #' Create Interactive Species Distribution Map with Hexagonal Binning
@@ -1070,37 +1211,42 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
   }
 
   # base map
-  carto_style
-
   sp_map <- maplibre(
     style = carto_style(ifelse(is_dark, "dark-matter", "voyager"))) |>
     fit_bounds(bbox = st_as_sf(sp_hex_list[[1]])) |>
     add_scale_control(position = "top-left", unit = "metric") |>
     add_navigation_control()
 
-  # add each resolution layer individually
-  for (i in 1:length(res_range)) { # i = 1
+  # add spatial boundary layers first (below hexagons)
+  vis_ids <- d_spatial_layers |> filter(default_visible) |> pull(dataset_id)
+  sp_map  <- sp_map |>
+    add_spatial_layers(d_spatial_layers, visible_ids = vis_ids, is_dark = is_dark)
+
+  # add each resolution layer with hover highlight
+  for (i in 1:length(res_range)) {
     sp_map <- sp_map |>
       add_fill_layer(
-        id               = paste0("sp", res_range[i]),
-        source           = st_as_sf(sp_hex_list[[i]]),
-        fill_color       = sp_scale_list[[i]]$expression,
+        id                 = paste0("sp", res_range[i]),
+        source             = st_as_sf(sp_hex_list[[i]]),
+        fill_color         = sp_scale_list[[i]]$expression,
         fill_outline_color = "white",
-        fill_opacity     = 0.6,
-        min_zoom         = zoom_breaks[i],
-        max_zoom         = zoom_breaks[i+1],
-        tooltip          = "tooltip")
+        fill_opacity       = 0.6,
+        min_zoom           = zoom_breaks[i],
+        max_zoom           = zoom_breaks[i+1],
+        tooltip            = "tooltip",
+        hover_options      = list(
+          fill_outline_color = "#ffeb3b",
+          fill_opacity       = 0.85))
   }
 
-  if (FALSE) {
-    sp_map <- sp_map |>
-      add_legend(
-        "Avg. Abundance (count/10m^2)",
-        values   = round(sp_scale_list[[1]]$breaks),
-        colors   = sp_scale_list[[1]]$colors,
-        type     = "continuous",
-        position = "bottom-left")
-  }
+  # add layers control with hexagons + visible spatial layers
+  hex_ids <- paste0("sp", res_range)
+  ctrl    <- build_layers_control(vis_ids, d_spatial_layers, hex_ids)
+  sp_map  <- sp_map |>
+    add_layers_control(
+      position    = "top-right",
+      layers      = ctrl,
+      collapsible = TRUE)
 
   return(sp_map)
 }
@@ -1150,30 +1296,36 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
     add_scale_control(position = "top-left", unit = "metric") |>
     add_navigation_control()
 
-  # add each resolution layer individually
-  for (i in 1:length(res_range)) { # i = 1
+  # add spatial boundary layers first (below hexagons)
+  vis_ids <- d_spatial_layers |> filter(default_visible) |> pull(dataset_id)
+  env_map <- env_map |>
+    add_spatial_layers(d_spatial_layers, visible_ids = vis_ids, is_dark = is_dark)
+
+  # add each resolution layer with hover highlight
+  for (i in 1:length(res_range)) {
     env_map <- env_map |>
       add_fill_layer(
-        id               = paste0("env", res_range[i]),
-        source           = st_as_sf(env_hex_list[[i]]),
-        fill_color       = env_scale_list[[i]]$expression,
+        id                 = paste0("env", res_range[i]),
+        source             = st_as_sf(env_hex_list[[i]]),
+        fill_color         = env_scale_list[[i]]$expression,
         fill_outline_color = "white",
-        fill_opacity     = 0.6,
-        min_zoom         = zoom_breaks[i],
-        max_zoom         = zoom_breaks[i+1],
-        tooltip          = "tooltip")
+        fill_opacity       = 0.6,
+        min_zoom           = zoom_breaks[i],
+        max_zoom           = zoom_breaks[i+1],
+        tooltip            = "tooltip",
+        hover_options      = list(
+          fill_outline_color = "#ffeb3b",
+          fill_opacity       = 0.85))
   }
 
-  # add legend
-  if (FALSE) {
-    env_map <- env_map |>
-      add_legend(
-        paste(env_stat_label, env_var_label),
-        values   = signif(env_scale_list[[1]]$breaks, 2),
-        colors   = env_scale_list[[1]]$colors,
-        type     = "continuous",
-        position = "bottom-right")
-  }
+  # add layers control with hexagons + visible spatial layers
+  hex_ids <- paste0("env", res_range)
+  ctrl    <- build_layers_control(vis_ids, d_spatial_layers, hex_ids)
+  env_map <- env_map |>
+    add_layers_control(
+      position    = "top-right",
+      layers      = ctrl,
+      collapsible = TRUE)
 
   return(env_map)
 }
