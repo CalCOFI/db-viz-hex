@@ -11,6 +11,7 @@ server <- function(input, output, session) {
   rx <- reactiveValues(
     df_sp          = NULL,
     df_env         = NULL,
+    env_hex_list   = NULL,  # cached env hex list for first map render
     env_var        = NULL,  # stores the env_var code (e.g., "t_deg_c")
     lbl_env_var    = NULL,  # stores the label (e.g., "Temperature (ºC)")
     sel_zones      = NULL,
@@ -53,20 +54,44 @@ server <- function(input, output, session) {
       sel_date_range  <- min_max_date
       sel_depth_range <- c(0, 212)
       ck_children     <- TRUE
+      env_stat        <- "mean"
 
       if (debug) message("Loading default species: ", sel_name)
 
-    # retrieve data (lazy tables from database)
-    df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children)
-    df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
+      # retrieve data (lazy tables from database) -- always needed for ts, splot, etc.
+      df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children)
+      df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
 
-      # validate data
-      n_sp <- df_sp |> summarize(n = n()) |> pull(n)
-      if (debug) message("Default species data: found", n_sp, "rows\n")
+      # try loading from cache
+      db_path <- if (is_server) local_db_srv else local_db
+      cached  <- load_cache(cache_dir, db_path)
 
-      if (n_sp == 0) {
-        if (debug) message("WARNING: No data found for default species\n")
-        return(NULL)
+      if (!is.null(cached)) {
+        if (debug) message("using cached default data")
+
+        sp_hex_list   <- cached$sp_hex_list
+        env_hex_list  <- cached$env_hex_list
+        summary_stats <- cached$summary_stats
+
+      } else {
+        if (debug) message("cache miss -- computing default data")
+
+        # validate data
+        n_sp <- df_sp |> summarize(n = n()) |> pull(n)
+        if (debug) message("Default species data: found ", n_sp, " rows")
+
+        if (n_sp == 0) {
+          if (debug) message("WARNING: No data found for default species")
+          return(NULL)
+        }
+
+        # compute hex lists and summary stats
+        sp_hex_list   <- prep_sp_hex(df_sp, res_range)
+        env_hex_list  <- prep_env_hex(df_env, res_range, env_stat)
+        summary_stats <- prep_summary_stats(df_sp, df_env)
+
+        # save to cache
+        save_cache(cache_dir, db_path, sp_hex_list, env_hex_list, summary_stats)
       }
 
       # store shared data
@@ -83,37 +108,29 @@ server <- function(input, output, session) {
 
       # build filter summary
       rx$filter_summary <- prep_filter_summary(
-        sel_name,
-        sel_env_var,
-        sel_qtr,
-        sel_date_range,
-        sel_depth_range,
-        drawn_polygon = NULL,
-        rx$sel_zones,
-        ck_children)
+        sel_name, sel_env_var, sel_qtr, sel_date_range,
+        sel_depth_range, drawn_polygon = NULL, rx$sel_zones, ck_children)
 
-      # summary statistics
-      rx$summary_stats <- prep_summary_stats(
-        rx$df_sp,
-        rx$df_env
-      )
+      # summary statistics (cached or computed)
+      rx$summary_stats <- summary_stats
 
-      # generate species map
-      if (debug) message("Generating default species map...\n")
-      sp_hex_list   <- prep_sp_hex(df_sp, res_range)
+      # generate species map from (possibly cached) hex list
+      if (debug) message("Generating default species map...")
       sp_scale_list <- lapply(
         sp_hex_list,
         interpolate_palette,
         column  = "sp.value",
         palette = \(n) hcl.colors(n, palette = "Viridis"))
-      rx$map_sp <- map_sp(sp_hex_list, sp_scale_list)
+      rx$map_sp   <- map_sp(sp_hex_list, sp_scale_list)
       rx$sp_scale <- sp_scale_list
-      if (debug) message("Default species map generated and stored in rx$map_sp\n")
+
+      # store env hex list for renderMaplibreCompare
+      rx$env_hex_list <- env_hex_list
 
       # reset depth profile
       rx$plot_depth <- NULL
 
-      if (debug) message("=== DEFAULT DATA LOADED ===\n\n")
+      if (debug) message("=== DEFAULT DATA LOADED ===\n")
     }, error = function(e) {
       message("ERROR in default data initialization: ", conditionMessage(e))
       traceback()
@@ -182,9 +199,16 @@ server <- function(input, output, session) {
 
     if (debug) message("renderMaplibreCompare: generating environmental map...\n")
 
-    env_stat <- input$sel_env_stat %||% "mean"
+    env_stat       <- input$sel_env_stat %||% "mean"
     env_stat_label <- names(which(env_stat_choices == env_stat))
-    env_hex_list   <- prep_env_hex(rx$df_env, res_range, env_stat)
+
+    # use cached env hex list if available and stat matches default
+    if (!is.null(rx$env_hex_list) && env_stat == "mean") {
+      env_hex_list    <- rx$env_hex_list
+      rx$env_hex_list <- NULL  # clear so re-renders recompute
+    } else {
+      env_hex_list <- prep_env_hex(rx$df_env, res_range, env_stat)
+    }
     env_scale_list <- lapply(
       env_hex_list,
       interpolate_palette,

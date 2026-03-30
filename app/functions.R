@@ -338,6 +338,15 @@ get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
 
 
 # data preparation functions ----
+# TODO (long-term): replace preloaded hex layers with h3t tile endpoint
+#   - plumber API at /api/h3t/{z}/{x}/{y} accepting SQL query params
+#   - determines H3 resolution from zoom z, filters by tile extent x/y
+#   - returns h3j-format JSON ([{h3: "hex_id", value: ...}, ...])
+#   - map sources switch from add_fill_layer(source = sf_data) to
+#     add_h3j_source(url = api_endpoint) or future add_h3t_source()
+#   - eliminates preloading all resolutions; data fetched on-demand per viewport
+#   - see: https://github.com/INSPIDE/h3j-h3t
+#   - see: https://walker-data.com/mapgl/reference/add_h3j_source.html
 
 #' Aggregate Species Data into H3 Hexagons
 #'
@@ -538,6 +547,55 @@ prep_env_hex <- function(df_env, res_range, env_stat) {
   }
 
   return(hex_env)
+}
+
+
+# cache helpers ----
+
+#' compute cache key from default parameters and database modification time
+cache_key <- function(db_path) {
+  params <- list(
+    sp_name    = default_sp_name,
+    env_var    = "t_deg_c",
+    quarters   = 1:4,
+    date_range = as.character(min_max_date),
+    depth      = c(0, 212),
+    children   = TRUE,
+    env_stat   = "mean",
+    res_range  = res_range)
+  db_mtime <- as.character(file.info(db_path)$mtime)
+  rlang::hash(c(params, db_mtime = db_mtime))
+}
+
+#' load cached default data if valid; returns list or NULL
+load_cache <- function(cache_dir, db_path) {
+  key_file <- file.path(cache_dir, "cache_key.rds")
+  if (!file.exists(key_file)) return(NULL)
+
+  saved_key   <- readRDS(key_file)
+  current_key <- cache_key(db_path)
+  if (saved_key != current_key) return(NULL)
+
+  files <- c("sp_hex_list.rds", "env_hex_list.rds", "summary_stats.rds")
+  paths <- file.path(cache_dir, files)
+  if (!all(file.exists(paths))) return(NULL)
+
+  list(
+    sp_hex_list   = readRDS(paths[1]),
+    env_hex_list  = readRDS(paths[2]),
+    summary_stats = readRDS(paths[3]))
+}
+
+#' save default data to cache
+save_cache <- function(cache_dir, db_path, sp_hex_list, env_hex_list, summary_stats) {
+  if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
+
+  saveRDS(cache_key(db_path), file.path(cache_dir, "cache_key.rds"))
+  saveRDS(sp_hex_list,        file.path(cache_dir, "sp_hex_list.rds"))
+  saveRDS(env_hex_list,       file.path(cache_dir, "env_hex_list.rds"))
+  saveRDS(summary_stats,      file.path(cache_dir, "summary_stats.rds"))
+
+  if (debug) message("cache saved to ", cache_dir)
 }
 
 

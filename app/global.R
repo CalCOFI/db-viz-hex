@@ -20,6 +20,7 @@ local_db     <- here("data/calcofi.duckdb")
 local_db_srv <- "/share/public/data/calcofi.duckdb"
 tmp_db       <- here("data/tmp.duckdb")
 hex_geo      <- here("data/hex.geojson")
+cache_dir    <- here("app/app_cache")
 is_server    <- Sys.info()[["sysname"]] == "Linux"
 use_local_db <- TRUE           # set to FALSE to use remote database, eg for ShinyApps.io
 debug        <- interactive()  # set to TRUE for diagnostic console messages
