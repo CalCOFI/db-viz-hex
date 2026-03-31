@@ -7,6 +7,7 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 }
 
 # Load libraries
+# remotes::install_github("bbest/mapgl@fix-compare-widget-parity", force=T) # https://github.com/walkerke/mapgl/pull/187
 librarian::shelf(
   bslib, bsicons, calcofi/calcofi4r, conductor, data.tree, DBI, dplyr, duckdb,
   geosphere, ggplot2, glue, here, highcharter, htmltools, htmlwidgets, httr2,

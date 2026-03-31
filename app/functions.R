@@ -1654,7 +1654,7 @@ modal_data <- function() {
           c(unique(cc_places$category), "Custom")),
         fluidRow(
           column(6, maplibreOutput("spatial_filter_map", height = "400px")),
-          column(6, dataTableOutput("tbl_places") )
+          column(6, DTOutput("tbl_places") )
         )
       ),
     ),
