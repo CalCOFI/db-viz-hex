@@ -157,8 +157,6 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
   # date_range  = c("1949-02-28", "2023-01-25") |> as.Date()
   # ck_children = T
 
-  #browser()
-
   if (ck_children){
     df_children <- tbl(con, "species") |>
       left_join(
@@ -1066,16 +1064,21 @@ add_spatial_layers <- function(map, d_layers, visible_ids = NULL, is_dark = TRUE
     vis <- ifelse(row$dataset_id %in% visible_ids, "visible", "none")
 
     # parse filter expression if present
-    filt <- if (!is.na(row$filter_expr))
+    filt <- if (!is.na(row$filter_expr)){
       jsonlite::fromJSON(row$filter_expr, simplifyVector = FALSE)
-    else
+    } else {
       NULL
+    }
 
     # tooltip + popup: use tooltip_field column name if available
-    tt <- if ("tooltip_field" %in% names(row) && !is.na(row$tooltip_field))
+    tt <- if ("tooltip_field" %in% names(row) && !is.na(row$tooltip_field)){
       row$tooltip_field
-    else
+    } else {
       NULL
+    }
+
+    # if (row$dataset_id == "ca_county_boundaries")
+    #   browser()
 
     if (row$geom_type == "line") {
       map <- map |>
@@ -1108,8 +1111,11 @@ add_spatial_layers <- function(map, d_layers, visible_ids = NULL, is_dark = TRUE
           tooltip            = tt,
           popup              = tt,
           hover_options      = list(
-            fill_outline_color = "#ffeb3b",
-            fill_opacity       = min(row$fill_opacity + 0.15, 0.6))) |>
+            # line_opacity = 0.7
+            # fill_color = "#ffeb3b")
+            # fill_color = "yellow",
+            # fill_opacity = 1
+            fill_opacity = min(row$fill_opacity + 0.35, 0.6))) |>
         add_line_layer(
           id           = paste0(row$dataset_id, "_outline"),
           source       = row$dataset_group,
@@ -1118,7 +1124,11 @@ add_spatial_layers <- function(map, d_layers, visible_ids = NULL, is_dark = TRUE
           line_width   = row$line_width,
           line_opacity = 0.7,
           visibility   = vis,
-          filter       = filt)
+          filter       = filt,
+          hover_options = list(
+            line_color = "yellow",
+            line_opacity = 1,
+            line_width = row$line_width * 2))
 
     } else if (row$geom_type == "point") {
       map <- map |>
@@ -1145,32 +1155,29 @@ add_spatial_layers <- function(map, d_layers, visible_ids = NULL, is_dark = TRUE
 #' Build grouped layers control list for the map
 #'
 #' Constructs the named list for \code{add_layers_control(layers = ...)}
-#' including both visible spatial layers (grouped by category) and
-#' hexagon data summary layers.
+#' with one entry per visible spatial layer (polygons pair fill + outline)
+#' plus a "Hexagon Data" entry for all hex layer IDs.
 #'
 #' @param visible_ids Character vector of currently visible spatial layer IDs
 #' @param d_layers Full spatial layers registry data frame
-#' @param hex_layer_ids Character vector of hexagon layer IDs (e.g., "sp1".."sp10")
+#' @param hex_layer_ids Character vector of hexagon layer IDs (both sp + env)
 #'
 #' @return Named list suitable for \code{add_layers_control(layers = ...)}
 build_layers_control <- function(visible_ids, d_layers, hex_layer_ids) {
   visible <- d_layers |> filter(dataset_id %in% visible_ids)
 
-  # spatial layers grouped by category
-  if (nrow(visible) > 0) {
-    spatial_groups <- split(
-      setNames(visible$dataset_id, visible$name),
-      visible$group)
-  } else {
-    spatial_groups <- list()
-  }
+  # each layer is its own toggle entry; polygons pair fill + outline
+  layer_entries <- lapply(seq_len(nrow(visible)), function(i) {
+    row <- visible[i, ]
+    ids <- row$dataset_id
+    if (row$geom_type == "polygon")
+      ids <- c(ids, paste0(ids, "_outline"))
+    setNames(list(ids), row$name)
+  })
 
-  # add hexagon data summaries as a group
-  ctrl <- c(
-    list("Hexagon Data" = hex_layer_ids),
-    spatial_groups)
-
-  ctrl
+  # combine hex data (BOTH sp + env IDs) + individual layer entries
+  c(list("Hexagon Data" = hex_layer_ids),
+    unlist(layer_entries, recursive = FALSE))
 }
 
 # visualization functions ----
@@ -1240,13 +1247,14 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
   }
 
   # add layers control with hexagons + visible spatial layers
-  hex_ids <- paste0("sp", res_range)
+  hex_ids <- c(paste0("sp", res_range), paste0("env", res_range))
   ctrl    <- build_layers_control(vis_ids, d_spatial_layers, hex_ids)
   sp_map  <- sp_map |>
     add_layers_control(
-      position    = "top-right",
-      layers      = ctrl,
-      collapsible = TRUE)
+      position     = "top-right",
+      layers       = ctrl,
+      collapsible  = TRUE,
+      margin_right = 45)
 
   return(sp_map)
 }
@@ -1319,13 +1327,14 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
   }
 
   # add layers control with hexagons + visible spatial layers
-  hex_ids <- paste0("env", res_range)
+  hex_ids <- c(paste0("sp", res_range), paste0("env", res_range))
   ctrl    <- build_layers_control(vis_ids, d_spatial_layers, hex_ids)
   env_map <- env_map |>
     add_layers_control(
-      position    = "top-right",
-      layers      = ctrl,
-      collapsible = TRUE)
+      position     = "top-right",
+      layers       = ctrl,
+      collapsible  = TRUE,
+      margin_right = 45)
 
   return(env_map)
 }

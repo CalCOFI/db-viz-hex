@@ -231,6 +231,10 @@ server <- function(input, output, session) {
 
     compare(rx$map_sp, map_env_obj, elementId = "map")
   })
+  # note: "output is in an unexpected state" warnings in the browser console
+  # are a cosmetic Shiny race condition — renderMaplibreCompare fires before
+  # renderUI has flushed the maplibreCompareOutput container to the DOM.
+  # these don't affect functionality.
 
   # dark_toggle -> map.style ----
   observeEvent(input$dark_toggle, {
@@ -261,21 +265,29 @@ server <- function(input, output, session) {
       setNames(d_spatial_layers$dataset_id, d_spatial_layers$name),
       d_spatial_layers$group)
 
+    grp_names <- names(layer_choices)
+    n         <- length(grp_names)
+    mid       <- ceiling(n / 2)
+
+    make_col <- function(grps) {
+      tagList(lapply(grps, function(grp) {
+        input_id <- paste0("lyr_", make.names(grp))
+        checkboxGroupInput(
+          input_id,
+          grp,
+          choices  = layer_choices[[grp]],
+          selected = intersect(
+            rx$spatial_visible,
+            layer_choices[[grp]]))
+      }))
+    }
+
     showModal(modalDialog(
       title = "Map Layers",
       size  = "l",
-      tagList(
-        lapply(names(layer_choices), function(grp) {
-          input_id <- paste0("lyr_", make.names(grp))
-          checkboxGroupInput(
-            input_id,
-            grp,
-            choices  = layer_choices[[grp]],
-            selected = intersect(
-              rx$spatial_visible,
-              layer_choices[[grp]]))
-        })
-      ),
+      fluidRow(
+        column(6, make_col(grp_names[1:mid])),
+        column(6, make_col(grp_names[(mid + 1):n]))),
       footer = tagList(
         actionButton("btn_layers_apply", "Apply", class = "btn-primary"),
         modalButton("Cancel"))
@@ -312,25 +324,19 @@ server <- function(input, output, session) {
       }
     }
 
-    # rebuild layers control with updated visible spatial layers
-    sp_hex_ids  <- paste0("sp",  res_range)
-    env_hex_ids <- paste0("env", res_range)
-    ctrl_sp  <- build_layers_control(selected, d_spatial_layers, sp_hex_ids)
-    ctrl_env <- build_layers_control(selected, d_spatial_layers, env_hex_ids)
+    # rebuild layers control on both sides with only selected layers
+    hex_ids <- c(paste0("sp", res_range), paste0("env", res_range))
+    ctrl    <- build_layers_control(selected, d_spatial_layers, hex_ids)
 
-    maplibre_compare_proxy("map", map_side = "before") |>
-      clear_controls(controls = "layers") |>
-      add_layers_control(
-        position    = "top-right",
-        layers      = ctrl_sp,
-        collapsible = TRUE)
-
-    maplibre_compare_proxy("map", map_side = "after") |>
-      clear_controls(controls = "layers") |>
-      add_layers_control(
-        position    = "top-right",
-        layers      = ctrl_env,
-        collapsible = TRUE)
+    for (side in c("before", "after")) {
+      maplibre_compare_proxy("map", map_side = side) |>
+        clear_controls(controls = "layers") |>
+        add_layers_control(
+          position     = "top-right",
+          layers       = ctrl,
+          collapsible  = TRUE,
+          margin_right = 45)
+    }
 
     removeModal()
   })

@@ -53,9 +53,10 @@ if (use_local_db){
 } else {
   con <- dbConnect(duckdb(), dbdir = tmp_db)
   q <- dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
+  q <- dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
+  q <- dbExecute(con, "INSTALL spatial; LOAD spatial;")
   q <- dbExecute(con, glue("ATTACH IF NOT EXISTS '{calcofi_db}' AS calcofi; USE calcofi"))
 }
-q <- dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
 q <- dbExecute(con, "INSTALL spatial; LOAD spatial;")
 # dbListTables(con) |> sort()
 

@@ -8,6 +8,7 @@ ui <- page_sidebar(
       "Integrated App")),
 
   tags$head(
+    tags$link(rel = "icon", type = "image/svg+xml", href = "logo_calcofi.svg"),
     includeHTML("google-analytics.html"),
     tags$style(HTML("
     .treeview {
