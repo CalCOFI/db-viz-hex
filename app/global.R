@@ -8,8 +8,9 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 
 # Load libraries
 # remotes::install_github("bbest/mapgl@fix-compare-widget-parity", force=T) # https://github.com/walkerke/mapgl/pull/187
+# remotes::install_github("calcofi/calcofi4r", force = T)
 librarian::shelf(
-  bslib, bsicons, calcofi/calcofi4r, conductor, data.tree, DBI, dplyr, duckdb,
+  bslib, bsicons, calcofi/calcofi4r, conductor, data.tree, DBI, dplyr, DT, duckdb,
   geosphere, ggplot2, glue, here, highcharter, htmltools, htmlwidgets, httr2,
   jsonlite, leaflet, litedown, lubridate, mapgl, plotly, purrr, readr, sf, shiny,
   shinyWidgets, stringr, thematic, tibble, tidyr, zip,
