@@ -1070,15 +1070,11 @@ add_spatial_layers <- function(map, d_layers, visible_ids = NULL, is_dark = TRUE
       NULL
     }
 
-    # tooltip + popup: use tooltip_field column name if available
-    tt <- if ("tooltip_field" %in% names(row) && !is.na(row$tooltip_field)){
-      row$tooltip_field
-    } else {
-      NULL
-    }
-
-    # if (row$dataset_id == "ca_county_boundaries")
-    #   browser()
+    # tooltip: "<strong>name</strong> - layer" (always available in PMTiles)
+    tt <- list(
+      "concat",
+      "<strong>", list("get", "name"), "</strong>",
+      " - ", list("get", "layer"))
 
     if (row$geom_type == "line") {
       map <- map |>
@@ -1172,7 +1168,7 @@ build_layers_control <- function(visible_ids, d_layers, hex_layer_ids) {
     ids <- row$dataset_id
     if (row$geom_type == "polygon")
       ids <- c(ids, paste0(ids, "_outline"))
-    setNames(list(ids), row$name)
+    setNames(list(ids), row$layer)
   })
 
   # combine hex data (BOTH sp + env IDs) + individual layer entries

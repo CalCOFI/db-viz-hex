@@ -262,7 +262,7 @@ server <- function(input, output, session) {
   observeEvent(input$btn_layers, {
     # build checkbox groups from registry
     layer_choices <- split(
-      setNames(d_spatial_layers$dataset_id, d_spatial_layers$name),
+      setNames(d_spatial_layers$dataset_id, d_spatial_layers$layer),
       d_spatial_layers$group)
 
     grp_names <- names(layer_choices)
