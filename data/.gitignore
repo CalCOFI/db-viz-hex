@@ -5,3 +5,8 @@ hex.geojson
 hex.geojson.zip
 calcofi_0-pre-taxa.duckdb
 calcofi_1-taxa.duckdb
+calcofi_v*.duckdb
+calcofi_v*.duckdb.wal
+catalog_v*.json
+latest.txt
+parquet/
