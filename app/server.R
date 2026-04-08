@@ -12,7 +12,7 @@ server <- function(input, output, session) {
     df_sp          = NULL,
     df_env         = NULL,
     env_hex_list   = NULL,  # cached env hex list for first map render
-    env_var        = NULL,  # stores the env_var code (e.g., "t_deg_c")
+    env_var        = NULL,  # stores the env_var code (e.g., "temperature")
     lbl_env_var    = NULL,  # stores the label (e.g., "Temperature (ºC)")
     sel_zones      = NULL,
     map_sp         = NULL,
@@ -25,7 +25,7 @@ server <- function(input, output, session) {
     plot_depth     = NULL,
     params = list( # filter/analysis params
       taxa             = default_sp_name,
-      env_var          = "t_deg_c",
+      env_var          = "temperature",
       quarters         = 1:4,
       date_range       = min_max_date,
       depth_range      = c(0, 212),
@@ -49,7 +49,7 @@ server <- function(input, output, session) {
 
       # default selections
       sel_name        <- default_sp_name
-      sel_env_var     <- "t_deg_c"
+      sel_env_var     <- "temperature"
       sel_qtr         <- 1:4
       sel_date_range  <- min_max_date
       sel_depth_range <- c(0, 212)
@@ -63,8 +63,7 @@ server <- function(input, output, session) {
       df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
 
       # try loading from cache
-      db_path <- if (is_server) local_db_srv else local_db
-      cached  <- load_cache(cache_dir, db_path)
+      cached <- load_cache(cache_dir, db_path)
 
       if (!is.null(cached)) {
         if (debug) message("using cached default data")
@@ -137,21 +136,6 @@ server <- function(input, output, session) {
     })
   })
 
-  # map_content ----
-  output$map_content <- renderUI({
-    if (is.null(rx$df_sp)) {
-      ui_placeholder(
-        "No Data Selected",
-        "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
-      )
-    } else {
-      div(
-        style = "width: 100%; height: 100%; position: relative;",
-        maplibreCompareOutput("map", width = "100%", height = "100%")
-      )
-    }
-  })
-
   # ts_content ----
   output$ts_content <- renderUI({
     if (is.null(rx$df_sp)) {
@@ -194,8 +178,13 @@ server <- function(input, output, session) {
   })
 
   # map ----
+  # defer rendering until after the first Shiny flush cycle so the
+  # maplibreCompareOutput DOM element is fully initialized on the client
+  map_ready <- reactiveVal(FALSE)
+  session$onFlushed(function() map_ready(TRUE), once = TRUE)
+
   output$map <- renderMaplibreCompare({
-    req(rx$df_env, rx$map_sp)
+    req(map_ready(), rx$df_env, rx$map_sp)
 
     if (debug) message("renderMaplibreCompare: generating environmental map...\n")
 
@@ -231,11 +220,6 @@ server <- function(input, output, session) {
 
     compare(rx$map_sp, map_env_obj, elementId = "map")
   })
-  # note: "output is in an unexpected state" warnings in the browser console
-  # are a cosmetic Shiny race condition — renderMaplibreCompare fires before
-  # renderUI has flushed the maplibreCompareOutput container to the DOM.
-  # these don't affect functionality.
-
   # dark_toggle -> map.style ----
   observeEvent(input$dark_toggle, {
     style  <- ifelse(
@@ -898,7 +882,7 @@ server <- function(input, output, session) {
       mutate(
         dist_bins = filt_env_data$distance %>%
           cut(seq(0, by = dist_bin_size, length.out = ceiling(max(.))/dist_bin_size+1), include.lowest = TRUE),
-        depth_bins = filt_env_data$depthm %>%
+        depth_bins = filt_env_data$depth_m %>%
           cut(seq(min(.), by = depth_bin_size, length.out = ceiling(max(.)/depth_bin_size)+1), include.lowest = TRUE) ) |>
       group_by(
         dist_bins, depth_bins) |>
@@ -1071,11 +1055,10 @@ server <- function(input, output, session) {
             select(
               env_dtime = dtime,
               env_qty   = qty,
-              env_cst   = cst_cnt,
-              env_depth = depthm,
+              env_cst   = cast_id,
+              env_depth = depth_m,
               env_lon   = lon_dec,
-              env_lat   = lat_dec,
-              env_depth = depthm) |>
+              env_lat   = lat_dec) |>
             mutate(
               env_dtime_lwr = sql(glue("env_dtime - INTERVAL {max_hours_diff} HOUR")),
               env_dtime_upr = sql(glue("env_dtime + INTERVAL {max_hours_diff} HOUR")))

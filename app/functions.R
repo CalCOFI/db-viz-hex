@@ -8,7 +8,7 @@
 #' @param taxonID Character string of the parent taxonID to query
 #' @param con DuckDB database connection object
 #' @param authority Character string specifying the taxonomic authority (default: "worms")
-get_taxon_children <- function(taxonID, con, authority = "worms") {
+get_taxon_children <- function(taxonID, con, authority = "WoRMS") {
 
   query_sql <- glue("
     WITH RECURSIVE taxon_children AS (
@@ -20,7 +20,7 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
         scientificName,
         taxonRank,
         0 as depth_level
-      FROM taxonomy
+      FROM taxon
       WHERE taxonID = ?
 
       UNION ALL
@@ -33,7 +33,7 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
         t.scientificName,
         t.taxonRank,
         tc.depth_level + 1 as depth_level
-      FROM taxonomy t
+      FROM taxon t
       INNER JOIN taxon_children tc ON t.parentNameUsageID = tc.taxonID
       WHERE
         t.parentNameUsageID IS NOT NULL AND
@@ -49,7 +49,7 @@ get_taxon_children <- function(taxonID, con, authority = "worms") {
 }
 
 
-get_taxon_parentage <- function(taxonID, con, authority = "worms"){
+get_taxon_parentage <- function(taxonID, con, authority = "WoRMS"){
 
   query_sql <- glue("
     WITH RECURSIVE taxon_hierarchy AS (
@@ -65,7 +65,7 @@ get_taxon_parentage <- function(taxonID, con, authority = "worms"){
         nomenclaturalStatus,
         namePublishedInYear,
         0 as level
-      FROM taxonomy
+      FROM taxon
       WHERE taxonID = ?
 
       UNION ALL
@@ -82,7 +82,7 @@ get_taxon_parentage <- function(taxonID, con, authority = "worms"){
         t.nomenclaturalStatus,
         t.namePublishedInYear,
         th.level + 1 as level
-      FROM taxonomy t
+      FROM taxon t
       INNER JOIN taxon_hierarchy th ON t.taxonID = th.parentNameUsageID
       -- Ensure we're getting the accepted version of the parent
       WHERE t.taxonID = t.acceptedNameUsageID  -- Only accepted taxa (not synonyms)
@@ -144,100 +144,63 @@ get_taxon_parentage <- function(taxonID, con, authority = "worms"){
 #' @importFrom lubridate quarter
 #'
 #' @export
-get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
+get_sp <- function(sp_name, qtr, date_range, ck_children = TRUE) {
   if (debug)
     message(
-      "get_sp: sp_name = ", sp_name, ", qtr = ", paste(qtr, collapse = ","),
+      "get_sp: sp_name = ", paste(sp_name, collapse = ", "),
+      ", qtr = ", paste(qtr, collapse = ","),
       ", date_range = ", paste(date_range, collapse = " to "),
       ", ck_children = ", ck_children)
 
-  # DEBUG
-  # sp_name     = c("Anchovies (Engraulidae)", "Pacific sardine (pilchard) (Sardinops sagax)")
-  # qtr         = 1:4
-  # date_range  = c("1949-02-28", "2023-01-25") |> as.Date()
-  # ck_children = T
+  # resolve selected names to worms_ids via species + taxon tables
+  # name format must match global.R: "Common Name (rank: Scientific Name)"
+  sp_taxon <- tbl(con, "species") |>
+    left_join(
+      tbl(con, "taxon") |> filter(authority == "WoRMS"),
+      by = join_by(worms_id == taxonID)) |>
+    mutate(
+      rank_part = ifelse(
+        is.na(taxonRank) | taxonRank == "",
+        "",
+        paste0(tolower(taxonRank), ": ")),
+      name_part = ifelse(
+        is.na(common_name) | common_name == "",
+        "",
+        paste0(common_name, " ")),
+      name = paste0(name_part, "(", rank_part, scientific_name, ")"))
 
-  if (ck_children){
-    df_children <- tbl(con, "species") |>
-      left_join(
-        tbl(con, "taxonomy") |>
-          filter(authority == "worms"),
-        by = join_by(worms_id == taxonID)) |>
-      mutate(
-        name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
+  if (ck_children) {
+    df_sel <- sp_taxon |>
       filter(name %in% sp_name) |>
       select(name, worms_id) |>
       collect() |>
-      mutate(
-        children = map(worms_id, get_taxon_children, con = con) ) |>
-      unnest(children) |>
-      select(name, depth_level, taxonRank, worms_id = acceptedNameUsageID, parent_id = parentNameUsageID)
-
-    df_sp <- tbl(con, "species") |>
-      inner_join(
-        df_children,
-        by = "worms_id",
-        copy = T)
+      mutate(children = map(worms_id, get_taxon_children, con = con)) |>
+      unnest(children)
+    worms_ids <- unique(df_sel$acceptedNameUsageID)
   } else {
-    df_sp <- tbl(con, "species") |>
-      left_join(
-        tbl(con, "taxonomy") |>
-          filter(authority == "worms"),
-        by = join_by(worms_id == taxonID)) |>
-      mutate(
-        name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
-      filter(name %in% sp_name)
+    worms_ids <- sp_taxon |>
+      filter(name %in% sp_name) |>
+      pull(worms_id)
   }
 
-  df_sp <- df_sp |>
-    left_join(
-      tbl(con, "larva"),
-      by = "species_id") |>
-    left_join(
-      tbl(con, "net"),
-      by = "net_uuid") |>
-    left_join(
-      tbl(con, "tow"),
-      by = "tow_uuid") |>
-    left_join(
-      tbl(con, "site"),
-      by = "site_uuid") |>
-    mutate(
-      quarter = quarter(time_start)) |>
+  # query bio_obs (pre-joined ichthyo + invert with H3, std_tally, quarter)
+  df_sp <- tbl(con, "bio_obs") |>
     filter(
-      !is.na(tally),
+      worms_id %in% worms_ids,
       between(time_start, !!date_range[1], !!date_range[2]),
       quarter %in% qtr) |>
     mutate(
-      std_tally = std_haul_factor * tally / prop_sorted)
+      name = ifelse(
+        is.na(common_name) | common_name == "",
+        paste0("(", scientific_name, ")"),
+        paste0(common_name, " (", scientific_name, ")")))
 
   if (debug) {
-    if (ck_children){
-      # show number of rows per taxonomic child by name
-      df_sp |>
-        group_by(name, depth_level, taxonRank, scientific_name, worms_id) |>
-        summarize(
-          child  = paste(depth_level, "-", taxonRank, ":", scientific_name, "(", worms_id, ")"),
-          n      = n(),
-          .groups = "drop") |>
-        select(name, child, n) |>
-        arrange(name, child, n) |>
-        collect() |>
-        print()
-    } else {
-      # show number of rows
-      df_sp |>
-        group_by(name, worms_id) |>
-        summarize(
-          n      = n(),
-          .groups = "drop") |>
-        select(name, n) |>
-        collect() |>
-        print()
-    }
+    n_rows <- df_sp |> summarize(n = n()) |> pull(n)
+    message("get_sp: returning lazy table with ", n_rows, " rows")
   }
 
-  return(df_sp)
+  df_sp
 }
 
 
@@ -246,7 +209,7 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
 #' Queries environmental bottle cast data with temporal, depth, and variable filters.
 #' Returns a dbplyr lazy table for efficient downstream processing.
 #'
-#' @param env_var Character string of database column name for environmental variable (e.g., "t_deg_c", "salnty")
+#' @param env_var Character string of database column name for environmental variable (e.g., "temperature", "salnty")
 #' @param qtr Character or numeric vector of quarters to include (1-4)
 #' @param date_range Date vector of length 2 (start date, end date)
 #' @param min_depth Numeric minimum depth in meters
@@ -257,37 +220,33 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = T) {
 #'     \item \code{date} - date of cast
 #'     \item \code{time} - time of cast (seconds since midnight)
 #'     \item \code{dtime} - datetime (computed via SQL CAST and INTERVAL)
-#'     \item \code{depthm} - depth in meters
+#'     \item \code{depth_m} - depth in meters
 #'     \item \code{lat_dec} - latitude (decimal degrees)
 #'     \item \code{lon_dec} - longitude (decimal degrees)
-#'     \item \code{qty} - renamed environmental variable value
+#'     \item \code{qty} - environmental variable value
 #'     \item \code{hex_h3res*} - H3 hexagon indices at multiple resolutions
 #'   }
 #'
 #' @details
-#' The function joins \code{cast} and \code{bottle} tables, then joins with
-#' \code{site} to obtain H3 spatial indices. Only records with non-NA values
-#' for the selected variable are returned. Datetime is constructed from separate
-#' date and time fields using DuckDB SQL.
+#' Queries \code{env_obs} materialized table (pre-joined casts + bottle +
+#' bottle_measurement with H3 columns and quarter). Only records with non-NA
+#' values for the selected measurement_type are returned.
 #'
 #' @examples
 #' \dontrun{
-#' # retrieve temperature data for Q1-Q2 2010-2020
 #' df_env <- get_env(
-#'   env_var    = "t_deg_c",
+#'   env_var    = "temperature",
 #'   qtr        = c(1, 2),
 #'   date_range = as.Date(c("2010-01-01", "2020-12-31")),
 #'   min_depth  = 0,
-#'   max_depth  = 100
-#' )
+#'   max_depth  = 100)
 #' df_env |> collect()
 #' }
 #'
 #' @seealso \code{\link{prep_env_hex}} for spatial aggregation
 #' @seealso \code{\link{prep_ts_env}} for temporal aggregation
 #'
-#' @importFrom dplyr tbl left_join rename filter mutate select starts_with between
-#' @importFrom dbplyr sql join_by
+#' @importFrom dplyr tbl filter rename select starts_with between
 #'
 #' @export
 get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
@@ -295,32 +254,18 @@ get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
                      ", date_range = ", paste(date_range, collapse = " to "),
                      ", depth = ", min_depth, "-", max_depth)
 
-  df_env <- tbl(con, "cast") |>
-    left_join(
-      tbl(con, "bottle"),
-      by = "cst_cnt") |>
-    left_join(
-      tbl(con, "site") |>
-        distinct(longitude, latitude, .keep_all = TRUE),
-      by = join_by(
-        lon_dec == longitude,
-        lat_dec == latitude)) |>
-    rename(
-      qty = all_of(env_var)) |>
+  df_env <- tbl(con, "env_obs") |>
     filter(
+      measurement_type == env_var,
       !is.na(qty),
-      between(depthm, min_depth, max_depth),
-      between(date, !!date_range[1], !!date_range[2]),
+      between(depth_m, min_depth, max_depth),
+      between(datetime_utc, !!date_range[1], !!date_range[2]),
       quarter %in% qtr) |>
-    mutate(
-      # datetime (time is in seconds since midnight)
-      dtime = sql("CAST(date AS TIMESTAMP) + INTERVAL (CAST(time AS VARCHAR) || ' second')")) |>
+    rename(dtime = datetime_utc) |>
     select(
-      date,
-      time,
       dtime,
-      cst_cnt,
-      depthm,
+      cast_id,
+      depth_m,
       lat_dec,
       lon_dec,
       qty,
@@ -331,7 +276,7 @@ get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
     message("get_env: returning lazy table with ", n_rows, " rows")
   }
 
-  return(df_env)
+  df_env
 }
 
 
@@ -468,7 +413,7 @@ prep_sp_hex <- function(df_sp, res_range) {
 #'
 #' @examples
 #' \dontrun{
-#' df_env <- get_env("t_deg_c", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
+#' df_env <- get_env("temperature", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
 #' env_hex <- prep_env_hex(df_env, res_range = 3:5, env_stat = "mean")
 #' }
 #'
@@ -554,7 +499,7 @@ prep_env_hex <- function(df_env, res_range, env_stat) {
 cache_key <- function(db_path) {
   params <- list(
     sp_name    = default_sp_name,
-    env_var    = "t_deg_c",
+    env_var    = "temperature",
     quarters   = 1:4,
     date_range = as.character(min_max_date),
     depth      = c(0, 212),
@@ -694,7 +639,7 @@ prep_ts_sp <- function(df_sp, ts_res) {
 #'
 #' @examples
 #' \dontrun{
-#' df_env <- get_env("t_deg_c", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
+#' df_env <- get_env("temperature", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
 #' env_ts <- prep_ts_env(df_env, ts_res = "year")
 #' }
 #'
@@ -758,7 +703,7 @@ prep_ts_env <- function(df_env, ts_res) {
 #' @examples
 #' \dontrun{
 #' df_sp <- get_sp("Anchovy (Engraulis mordax)", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"))
-#' df_env <- get_env("t_deg_c", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
+#' df_env <- get_env("temperature", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
 #' df_splot <- prep_splot(df_sp, df_env, env_stat = "mean")
 #' }
 #'
@@ -787,11 +732,10 @@ prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
     select(
       env_dtime = dtime,
       env_qty   = qty,
-      env_cst   = cst_cnt,
-      env_depth = depthm,
+      env_cst   = cast_id,
+      env_depth = depth_m,
       env_lon   = lon_dec,
-      env_lat   = lat_dec,
-      env_depth = depthm) |>
+      env_lat   = lat_dec) |>
     mutate(
       env_dtime_lwr = sql(glue("env_dtime - INTERVAL {max_hours_diff} HOUR")),
       env_dtime_upr = sql(glue("env_dtime + INTERVAL {max_hours_diff} HOUR")))
@@ -851,7 +795,7 @@ prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
 #' and spatial constraints into human-readable markdown strings.
 #'
 #' @param sel_name Character vector of selected species names (format: "Common Name (Scientific Name)")
-#' @param sel_env_var Character string of selected environmental variable (e.g., "t_deg_c")
+#' @param sel_env_var Character string of selected environmental variable (e.g., "temperature")
 #' @param sel_qtr Numeric vector of selected quarters (1-4)
 #' @param sel_date_range Date vector of length 2 (start date, end date)
 #' @param sel_depth_range Numeric vector of length 2 (min depth, max depth) in meters
@@ -862,7 +806,7 @@ prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
 #' @examples
 #' prep_filter_summary(
 #'   sel_name        = c("Anchovy (Engraulis mordax)", "Sardine (Sardinops sagax)"),
-#'   sel_env_var     = "t_deg_c",
+#'   sel_env_var     = "temperature",
 #'   sel_qtr         = c(1, 2),
 #'   sel_date_range  = as.Date(c("2000-01-01", "2020-12-31")),
 #'   sel_depth_range = c(0, 100),
@@ -952,11 +896,19 @@ taxa_tree_builder <- function(df_sp) {
   # build data.tree of taxa
   tree_counts <- tbl(con, "species") |>
     left_join(
-      tbl(con, "taxonomy") |>
-        filter(authority == "worms"),
+      tbl(con, "taxon") |>
+        filter(authority == "WoRMS"),
       by = join_by(worms_id == taxonID)) |>
     mutate(
-      name = paste0(common_name, " (", tolower(taxonRank), ": ", scientific_name, ")")) |>
+      rank_part = ifelse(
+        is.na(taxonRank) | taxonRank == "",
+        "",
+        paste0(tolower(taxonRank), ": ")),
+      name_part = ifelse(
+        is.na(common_name) | common_name == "",
+        "",
+        paste0(common_name, " ")),
+      name = paste0(name_part, "(", rank_part, scientific_name, ")")) |>
     filter(name %in% names) |>
     select(name, worms_id) |>
     collect() |>
@@ -1275,7 +1227,7 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
 #'
 #' @examples
 #' \dontrun{
-#' df_env <- get_env("t_deg_c", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
+#' df_env <- get_env("temperature", qtr = 1:4, date_range = c("2000-01-01", "2020-12-31"), min_depth = 0, max_depth = 100)
 #' env_hex <- prep_env_hex(df_env, res_range = 3:5, env_stat = "mean")
 #' env_scale <- lapply(env_hex, function(x) scales::col_numeric("viridis", domain = range(x$env.value)))
 #' map_env(env_hex, env_scale, "Mean", "Temperature (°C)")
@@ -1345,7 +1297,7 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
 #' @param sp_ts data.frame from \code{\link{prep_ts_sp}} with columns: \code{time}, \code{name}, \code{avg}, \code{std}, \code{lwr}, \code{upr}
 #' @param env_ts data.frame from \code{\link{prep_ts_env}} with columns: \code{time}, \code{avg}, \code{std}, \code{lwr}, \code{upr}
 #' @param ts_res Character string specifying temporal resolution: "year", "quarter", "month", "day", etc.
-#' @param sel_env_var Character string of environmental variable column name (e.g., "t_deg_c")
+#' @param sel_env_var Character string of environmental variable column name (e.g., "temperature")
 #'
 #' @return highchart object with dual y-axes, line + ribbon series, and zoom capabilities
 #'
@@ -1358,7 +1310,7 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
 #' \dontrun{
 #' sp_ts <- prep_ts_sp(df_sp, ts_res = "year")
 #' env_ts <- prep_ts_env(df_env, ts_res = "year")
-#' plot_ts(sp_ts, env_ts, ts_res = "year", sel_env_var = "t_deg_c")
+#' plot_ts(sp_ts, env_ts, ts_res = "year", sel_env_var = "temperature")
 #' }
 #'
 #' @seealso \code{\link{prep_ts_sp}} for species time series data

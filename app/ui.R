@@ -191,7 +191,9 @@ ui <- page_sidebar(
 
     nav_panel(
       "Map",
-      uiOutput("map_content") ),
+      div(
+        style = "width: 100%; height: 100%; position: relative;",
+        maplibreCompareOutput("map", width = "100%", height = "100%")) ),
 
     nav_panel(
       "Time Series",
