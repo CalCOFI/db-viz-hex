@@ -71,6 +71,9 @@ if (!file.exists(db_path)) {
 message("Using database: ", db_path)
 drv <- duckdb(dbdir = db_path, read_only = TRUE)
 con <- dbConnect(drv)
+# The server runs Shiny apps as the shiny user, which has its own home
+# at /home/shiny/. Extensions install to ~/.local/share/R/duckdb/extensions/
+#   which is per-user.
 dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
 dbExecute(con, "INSTALL spatial; LOAD spatial;")
 # dbListTables(con) |> sort()
