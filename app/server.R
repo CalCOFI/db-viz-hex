@@ -62,38 +62,80 @@ server <- function(input, output, session) {
       df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children)
       df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
 
-      # try loading from cache
-      cached <- load_cache(cache_dir, db_path)
+      if (USE_H3T) {
+        # h3t path: skip the 10-resolution sf preload entirely. hex data is
+        # served on-demand per viewport; we only need a single color scale per
+        # side (from /h3t/stats) for the legend.
+        if (debug) message("USE_H3T: fetching stats instead of preloading hex lists")
 
-      if (!is.null(cached)) {
-        if (debug) message("using cached default data")
+        # extract scientific_name from UI-formatted label "Common name (rank: Scientific name)"
+        sci_name <- sub(".*\\(.*:\\s*([^)]+)\\).*", "\\1", sel_name)
+        sp_sql  <- build_sp_sql(sci_name, sel_qtr, sel_date_range, include_children = FALSE)
+        env_sql <- build_env_sql(sel_env_var, sel_qtr, sel_date_range, sel_depth_range, stat = env_stat)
 
-        sp_hex_list   <- cached$sp_hex_list
-        env_hex_list  <- cached$env_hex_list
-        summary_stats <- cached$summary_stats
-
-      } else {
-        if (debug) message("cache miss -- computing default data")
-
-        # validate data
-        n_sp <- df_sp |> summarize(n = n()) |> pull(n)
-        if (debug) message("Default species data: found ", n_sp, " rows")
-
-        if (n_sp == 0) {
-          if (debug) message("WARNING: No data found for default species")
-          return(NULL)
+        sp_stats  <- fetch_h3t_stats(sp_sql,  H3T_RELEASE)
+        env_stats <- fetch_h3t_stats(env_sql, H3T_RELEASE)
+        if (debug) {
+          message("sp stats:  "); print(sp_stats)
+          message("env stats: "); print(env_stats)
         }
 
-        # compute hex lists and summary stats
-        sp_hex_list   <- prep_sp_hex(df_sp, res_range)
-        env_hex_list  <- prep_env_hex(df_env, res_range, env_stat)
-        summary_stats <- prep_summary_stats(df_sp, df_env)
+        sp_scale  <- build_h3t_scale(sp_stats,
+          palette = \(n) hcl.colors(n, palette = "Viridis"))
+        env_scale <- build_h3t_scale(env_stats,
+          palette = \(n) rev(hcl.colors(n, palette = "Spectral")))
 
-        # save to cache
-        save_cache(cache_dir, db_path, sp_hex_list, env_hex_list, summary_stats)
+        sp_tile_url  <- h3t_tile_url(sp_sql,  H3T_RELEASE)
+        env_tile_url <- h3t_tile_url(env_sql, H3T_RELEASE)
+
+        rx$map_sp      <- map_sp_h3t(sp_tile_url,  sp_scale)
+        rx$env_tile_url <- env_tile_url
+        rx$env_scale_single <- env_scale
+
+        # keep the zoom observer happy: length-10 list of copies
+        rx$sp_scale    <- rep(list(sp_scale),  length(res_range))
+        rx$env_scale   <- rep(list(env_scale), length(res_range))
+
+        # summary stats: build_h3t_scale gave us min/max/n; reuse
+        rx$summary_stats <- prep_summary_stats(df_sp, df_env)
+
+      } else {
+        # classic path: 10-resolution sf preload (with RDS cache)
+        cached <- load_cache(cache_dir, db_path)
+
+        if (!is.null(cached)) {
+          if (debug) message("using cached default data")
+          sp_hex_list   <- cached$sp_hex_list
+          env_hex_list  <- cached$env_hex_list
+          summary_stats <- cached$summary_stats
+        } else {
+          if (debug) message("cache miss -- computing default data")
+          n_sp <- df_sp |> summarize(n = n()) |> pull(n)
+          if (debug) message("Default species data: found ", n_sp, " rows")
+          if (n_sp == 0) {
+            if (debug) message("WARNING: No data found for default species")
+            return(NULL)
+          }
+          sp_hex_list   <- prep_sp_hex(df_sp, res_range)
+          env_hex_list  <- prep_env_hex(df_env, res_range, env_stat)
+          summary_stats <- prep_summary_stats(df_sp, df_env)
+          save_cache(cache_dir, db_path, sp_hex_list, env_hex_list, summary_stats)
+        }
+
+        rx$summary_stats <- summary_stats
+
+        if (debug) message("Generating default species map...")
+        sp_scale_list <- lapply(
+          sp_hex_list,
+          interpolate_palette,
+          column  = "sp.value",
+          palette = \(n) hcl.colors(n, palette = "Viridis"))
+        rx$map_sp       <- map_sp(sp_hex_list, sp_scale_list)
+        rx$sp_scale     <- sp_scale_list
+        rx$env_hex_list <- env_hex_list
       }
 
-      # store shared data
+      # store shared data (both paths)
       rx$df_sp       <- df_sp
       rx$df_env      <- df_env
       rx$env_var     <- sel_env_var
@@ -105,28 +147,10 @@ server <- function(input, output, session) {
       rx$params$depth_range <- sel_depth_range
       rx$params$ck_children <- ck_children
 
-      # build filter summary
       rx$filter_summary <- prep_filter_summary(
         sel_name, sel_env_var, sel_qtr, sel_date_range,
         sel_depth_range, drawn_polygon = NULL, rx$sel_zones, ck_children)
 
-      # summary statistics (cached or computed)
-      rx$summary_stats <- summary_stats
-
-      # generate species map from (possibly cached) hex list
-      if (debug) message("Generating default species map...")
-      sp_scale_list <- lapply(
-        sp_hex_list,
-        interpolate_palette,
-        column  = "sp.value",
-        palette = \(n) hcl.colors(n, palette = "Viridis"))
-      rx$map_sp   <- map_sp(sp_hex_list, sp_scale_list)
-      rx$sp_scale <- sp_scale_list
-
-      # store env hex list for renderMaplibreCompare
-      rx$env_hex_list <- env_hex_list
-
-      # reset depth profile
       rx$plot_depth <- NULL
 
       if (debug) message("=== DEFAULT DATA LOADED ===\n")
@@ -191,10 +215,33 @@ server <- function(input, output, session) {
     env_stat       <- input$sel_env_stat %||% "mean"
     env_stat_label <- names(which(env_stat_choices == env_stat))
 
-    # use cached env hex list if available and stat matches default
+    if (USE_H3T) {
+      # h3t path: reuse the tile_url + scale computed in the preload block.
+      # if env_stat changes from the default, we rebuild the URL/scale here.
+      if (is.null(rx$env_tile_url) || env_stat != "mean") {
+        env_sql <- build_env_sql(
+          rx$env_var, rx$params$sel_qtr, rx$params$date_range,
+          rx$params$depth_range, stat = env_stat)
+        env_stats <- fetch_h3t_stats(env_sql, H3T_RELEASE)
+        env_scale <- build_h3t_scale(env_stats,
+          palette = \(n) rev(hcl.colors(n, palette = "Spectral")))
+        env_tile_url <- h3t_tile_url(env_sql, H3T_RELEASE)
+        rx$env_scale_single <- env_scale
+        rx$env_scale <- rep(list(env_scale), length(res_range))
+      } else {
+        env_tile_url <- rx$env_tile_url
+        env_scale    <- rx$env_scale_single
+      }
+      map_env_obj <- map_env_h3t(env_tile_url, env_scale,
+                                 env_stat_label, rx$lbl_env_var)
+      rx$params$map_params$env_stat <- env_stat
+      return(compare(rx$map_sp, map_env_obj, elementId = "map"))
+    }
+
+    # classic path
     if (!is.null(rx$env_hex_list) && env_stat == "mean") {
       env_hex_list    <- rx$env_hex_list
-      rx$env_hex_list <- NULL  # clear so re-renders recompute
+      rx$env_hex_list <- NULL
     } else {
       env_hex_list <- prep_env_hex(rx$df_env, res_range, env_stat)
     }

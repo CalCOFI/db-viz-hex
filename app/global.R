@@ -95,6 +95,12 @@ pmtiles_base_url <- "https://storage.googleapis.com/calcofi-files-public/_spatia
 
 # load functions ----
 source(here("app/functions.R"))
+source(here("app/functions_h3t.R"))
+
+# h3t feature flag — when TRUE, the app skips the 10-resolution sf preload and
+# reads hex data on-demand from the h3t tile API (see api-h3t/). default off.
+USE_H3T <- isTRUE(as.logical(Sys.getenv("H3T_USE", "FALSE")))
+H3T_RELEASE <- Sys.getenv("H3T_RELEASE", "")  # baked into tile URLs
 
 # extract species names and date range ----
 # all species (ichthyo + invert) are in the species table with WoRMS taxonomy
