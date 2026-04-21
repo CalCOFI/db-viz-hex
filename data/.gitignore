@@ -10,3 +10,4 @@ calcofi_v*.duckdb.wal
 catalog_v*.json
 latest.txt
 parquet/
+calcofi_latest.duckdb

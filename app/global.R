@@ -9,6 +9,7 @@ if (!requireNamespace("librarian", quietly = TRUE)) {
 # Load libraries
 # remotes::install_github("bbest/mapgl@fix-compare-widget-parity", force=T) # https://github.com/walkerke/mapgl/pull/187
 # remotes::install_github("calcofi/calcofi4r", force = T)
+# remotes::install_github("bbest/mapgl@feat/add-h3t-source", force=T)       # https://github.com/walkerke/mapgl/pull/199
 librarian::shelf(
   bslib,
   bsicons,
@@ -97,10 +98,19 @@ pmtiles_base_url <- "https://storage.googleapis.com/calcofi-files-public/_spatia
 source(here("app/functions.R"))
 source(here("app/functions_h3t.R"))
 
+# .Renviron not working, so setting manually
+Sys.setenv(
+  H3T_USE      = TRUE,
+  H3T_BASE_URL = "https://h3t.calcofi.io/h3t",
+  H3T_RELEASE  = "v2026.04.08")
+
 # h3t feature flag — when TRUE, the app skips the 10-resolution sf preload and
 # reads hex data on-demand from the h3t tile API (see api-h3t/). default off.
 USE_H3T <- isTRUE(as.logical(Sys.getenv("H3T_USE", "FALSE")))
 H3T_RELEASE <- Sys.getenv("H3T_RELEASE", "")  # baked into tile URLs
+
+message("USE_H3T: ", USE_H3T)
+message("H3T_RELEASE: ", H3T_RELEASE)
 
 # extract species names and date range ----
 # all species (ichthyo + invert) are in the species table with WoRMS taxonomy
