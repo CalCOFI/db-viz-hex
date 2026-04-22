@@ -161,8 +161,7 @@ map_sp_h3t <- function(tile_url, scale, bbox = c(-125, 30, -115, 38),
     mapgl::add_h3t_source(
       id          = "sp",
       tiles       = tile_url,
-      sourcelayer = "sp",
-      debug       = TRUE
+      sourcelayer = "sp"
     ) |>
     mapgl::add_fill_layer(
       id                 = "sp",
@@ -197,8 +196,7 @@ map_env_h3t <- function(tile_url, scale, env_stat_label, env_var_label,
     mapgl::add_h3t_source(
       id          = "env",
       tiles       = tile_url,
-      sourcelayer = "env",
-      debug       = TRUE
+      sourcelayer = "env"
     ) |>
     mapgl::add_fill_layer(
       id                 = "env",
