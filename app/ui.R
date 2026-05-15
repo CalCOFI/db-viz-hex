@@ -214,16 +214,22 @@ ui <- page_sidebar(
 
     nav_panel(
       "Download",
-      "Select the datasets you'd like to download, then click \"Download.\"",
+      markdown(
+        "Select the datasets you'd like to download, then click **Download**.
+         The bundle is organized into `data/original/`, `data/summarized/` and
+         `data/integrated/`, each paired with the exact, portable SQL in a
+         `query/` folder (`manifest.json`, per-file `*.sql`, `REPRODUCE.md`) so
+         the integrated bio↔env match can be re-run anywhere against the
+         public CalCOFI release parquet."),
       checkboxGroupInput(
         "sel_raw_data_download",
         "Raw datasets",
         c(
           "Raw environmental data"    =  "raw_env",
           "Raw species data"          =  "raw_sp",
-          "Integrated data (raw
-           environmental and species
-           combined)"                 =  "int"),
+          "Integrated data + reproducible SQL
+           (species matched to environment;
+           adds the query/ folder)"   =  "int"),
         width = "100%"),
       conditionalPanel(
         condition = "input.sel_raw_data_download.includes('int')",
