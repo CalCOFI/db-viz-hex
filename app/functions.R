@@ -1912,3 +1912,408 @@ fix_dateline_crossing <- function(segment) {
 
   return(new_segment)
 }
+
+
+# reproducible downloads ----
+# The download bundle pairs every data file with the exact, portable SQL that
+# produced it. The integration query is built and executed by
+# calcofi4r::cc_match_bio_env() against the public GCS release parquet, so
+# anyone can re-run query/integrated_*.sql in DuckDB (CLI, Python or R) and get
+# identical rows. See query/REPRODUCE.md inside any downloaded bundle.
+
+#' Resolve the frozen-release version powering the app database
+#'
+#' Parses the version (e.g. \code{"v2026.05.14"}) out of the app's DuckDB file
+#' name; falls back to the GCS \code{latest.txt} pointer.
+#'
+#' @param path Path to the app database (default: the \code{db_path} global).
+#' @return Release version string.
+#' @export
+release_version <- function(path = db_path) {
+  v <- sub(".*calcofi_(v[0-9][0-9.]*)\\.duckdb$", "\\1", basename(path))
+  if (grepl("^v[0-9]", v)) return(v)
+  tryCatch(
+    trimws(readLines(
+      "https://storage.googleapis.com/calcofi-db/ducklake/releases/latest.txt",
+      warn = FALSE)[1]),
+    error = function(e) "latest")
+}
+
+#' Public GCS parquet base URL for a release
+#'
+#' @param version Release version string from \code{\link{release_version}}.
+#' @return Base URL (no trailing slash) for the release's single-file parquet.
+#' @export
+gcs_parquet_base <- function(version) {
+  glue(
+    "https://storage.googleapis.com/calcofi-db/ducklake/releases/{version}/parquet")
+}
+
+#' Extract a scientific name from a UI species label
+#'
+#' Species dropdown labels look like \code{"Common name (rank: Scientific
+#' name)"} (or \code{"(Scientific name)"} when no common name). Returns the
+#' scientific name.
+#'
+#' @param label Character species label.
+#' @return Scientific name (character).
+#' @export
+extract_scientific_name <- function(label) {
+  # "Common (rank: Scientific)" -> "Scientific" (last parenthetical, after ': ')
+  sci <- sub(".*\\(.*:\\s*([^)]+)\\).*", "\\1", label)
+  if (identical(sci, label))
+    # fallback "Common (Scientific)" / "(Scientific)" -> last parenthetical
+    sci <- sub(".*\\(([^)]+)\\)\\s*$", "\\1", label)
+  trimws(sci)
+}
+
+#' Distinct read_parquet() source URLs referenced in a SQL string
+#'
+#' @param sql One or more SQL strings.
+#' @return Sorted unique character vector of GCS parquet URLs.
+#' @export
+extract_source_urls <- function(sql) {
+  one  <- paste(sql, collapse = "\n")
+  hits <- regmatches(one, gregexpr("read_parquet\\('[^']+'", one))[[1]]
+  sort(unique(gsub("read_parquet\\('|'$", "", hits)))
+}
+
+#' Build the biological (ichthyoplankton) match subquery
+#'
+#' Emits a portable \code{SELECT} over the release's GCS parquet, shaped for
+#' \code{calcofi4r::cc_match_bio_env()} (columns \code{bio_id}, \code{bio_datetime},
+#' \code{bio_lon}, \code{bio_lat}, \code{bio_value} plus descriptive columns).
+#' When \code{include_children} is \code{TRUE} the species filter is expanded
+#' via a recursive walk of the WoRMS \code{taxon.parentNameUsageID} tree.
+#'
+#' @param sci_names Character vector of scientific names.
+#' @param qtr Integer vector of quarters (1-4).
+#' @param date_range Length-2 date vector (tow start bounds).
+#' @param version Release version string.
+#' @param include_children Include descendant taxa (default: TRUE).
+#' @return SQL \code{SELECT} string.
+#' @export
+build_bio_match_sql <- function(
+    sci_names, qtr, date_range, version, include_children = TRUE) {
+
+  base <- gcs_parquet_base(version)
+  nm   <- paste0("'", gsub("'", "''", sci_names), "'", collapse = ", ")
+  qtrs <- paste(as.integer(qtr), collapse = ", ")
+  d1   <- as.character(date_range[1])
+  d2   <- as.character(date_range[2])
+
+  prefix        <- ""
+  species_where <- glue("sp.scientific_name IN ({nm})")
+  if (isTRUE(include_children)) {
+    prefix <- glue(
+      "WITH RECURSIVE taxon_tree AS (
+      SELECT taxonID
+      FROM read_parquet('{base}/taxon.parquet')
+      WHERE authority = 'WoRMS'
+        AND taxonID IN (
+          SELECT worms_id FROM read_parquet('{base}/species.parquet')
+          WHERE scientific_name IN ({nm}))
+    UNION ALL
+      SELECT t.taxonID
+      FROM read_parquet('{base}/taxon.parquet') t
+      JOIN taxon_tree tt ON t.parentNameUsageID = tt.taxonID
+      WHERE t.authority = 'WoRMS'
+  )
+  ")
+    species_where <- "sp.worms_id IN (SELECT taxonID FROM taxon_tree)"
+  }
+
+  glue(
+    "  {prefix}SELECT
+    i.ichthyo_uuid::VARCHAR AS bio_id,
+    t.time_start            AS bio_datetime,
+    s.longitude             AS bio_lon,
+    s.latitude              AS bio_lat,
+    n.std_haul_factor * i.tally / nullif(n.prop_sorted, 0) AS bio_value,
+    sp.scientific_name,
+    sp.common_name,
+    sp.worms_id,
+    i.life_stage,
+    i.tally,
+    extract(quarter FROM t.time_start)::INTEGER AS quarter
+  FROM read_parquet('{base}/ichthyo.parquet') i
+  JOIN read_parquet('{base}/species.parquet') sp ON i.species_id = sp.species_id
+  JOIN read_parquet('{base}/net.parquet')     n  ON i.net_uuid   = n.net_uuid
+  JOIN read_parquet('{base}/tow.parquet')     t  ON n.tow_uuid   = t.tow_uuid
+  JOIN read_parquet('{base}/site.parquet')    s  ON t.site_uuid  = s.site_uuid
+  WHERE i.tally IS NOT NULL
+    AND i.measurement_type IS NULL
+    AND t.time_start IS NOT NULL
+    AND s.longitude IS NOT NULL
+    AND s.latitude IS NOT NULL
+    AND {species_where}
+    AND extract(quarter FROM t.time_start) IN ({qtrs})
+    AND t.time_start >= TIMESTAMP '{d1}'
+    AND t.time_start <= TIMESTAMP '{d2}'")
+}
+
+#' Build the environmental (CTD-bottle) match subquery
+#'
+#' Emits a portable \code{SELECT} over the release's GCS parquet, shaped for
+#' \code{calcofi4r::cc_match_bio_env()} (columns \code{env_id}, \code{env_datetime},
+#' \code{env_lon}, \code{env_lat}, \code{env_value}, \code{env_depth_m},
+#' \code{measurement_type}). The date window is padded by \code{pad_hours} so
+#' boundary matches survive the downstream interval join.
+#'
+#' @param env_var Environmental \code{measurement_type}.
+#' @param qtr Integer vector of quarters (1-4).
+#' @param date_range Length-2 date vector (cast datetime bounds).
+#' @param depth_range Length-2 numeric vector (bottle depth bounds, meters).
+#' @param version Release version string.
+#' @param pad_hours Hours to pad the date window (default: 6).
+#' @return SQL \code{SELECT} string.
+#' @export
+build_env_match_sql <- function(
+    env_var, qtr, date_range, depth_range, version, pad_hours = 6) {
+
+  base <- gcs_parquet_base(version)
+  qtrs <- paste(as.integer(qtr), collapse = ", ")
+  d1   <- as.character(date_range[1])
+  d2   <- as.character(date_range[2])
+  dmin <- depth_range[1]
+  dmax <- depth_range[2]
+
+  glue(
+    "  SELECT
+    bm.bottle_measurement_id AS env_id,
+    c.datetime_utc           AS env_datetime,
+    c.lon_dec                AS env_lon,
+    c.lat_dec                AS env_lat,
+    bm.measurement_value     AS env_value,
+    b.depth_m                AS env_depth_m,
+    bm.measurement_type      AS measurement_type
+  FROM read_parquet('{base}/bottle_measurement.parquet') bm
+  JOIN read_parquet('{base}/bottle.parquet') b ON bm.bottle_id = b.bottle_id
+  JOIN read_parquet('{base}/casts.parquet')  c ON b.cast_id    = c.cast_id
+  WHERE bm.measurement_type = '{env_var}'
+    AND bm.measurement_value IS NOT NULL
+    AND c.datetime_utc IS NOT NULL
+    AND c.lon_dec IS NOT NULL
+    AND c.lat_dec IS NOT NULL
+    AND b.depth_m >= {dmin}
+    AND b.depth_m <= {dmax}
+    AND extract(quarter FROM c.datetime_utc) IN ({qtrs})
+    AND c.datetime_utc >= TIMESTAMP '{d1}' - INTERVAL '{pad_hours} hours'
+    AND c.datetime_utc <= TIMESTAMP '{d2}' + INTERVAL '{pad_hours} hours'")
+}
+
+#' Render the REPRODUCE.md walk-through for a download bundle
+#'
+#' @param manifest The manifest list assembled by \code{\link{build_download_bundle}}.
+#' @return Character vector of markdown lines.
+#' @export
+reproduce_md <- function(manifest) {
+  v <- manifest$release_version
+  c(
+    "# Reproducing this CalCOFI download",
+    "",
+    glue(
+      "Every file under `data/` was produced by a SQL query in `query/`, run ",
+      "against the **public** Parquet files of CalCOFI release `{v}` on Google ",
+      "Cloud Storage. Re-run any `.sql` file in DuckDB and you get identical ",
+      "rows — no credentials, no API and no app required."),
+    "",
+    "## What's in this bundle",
+    "",
+    "| data file | query | description |",
+    "|---|---|---|",
+    "| `data/original/bio.csv` | `query/bio.sql` | net-tow ichthyoplankton (standardized tally) |",
+    "| `data/original/env.csv` | `query/env.sql` | CTD-bottle environmental measurements |",
+    "| `data/integrated/integrated_<method>.csv` | `query/integrated_<method>.sql` | bio matched to env in time + space |",
+    "| `query/manifest.json` | — | release version, filters, row counts, md5 checksums |",
+    "",
+    glue(
+      "`<method>` is one of `nearest_time`, `nearest_dist`, `average` — how the ",
+      "environmental observations within the match window are reduced per ",
+      "biological observation."),
+    "",
+    "## Re-run the integration query",
+    "",
+    "### DuckDB CLI",
+    "",
+    "```sh",
+    "duckdb < query/integrated_nearest_time.sql",
+    "```",
+    "",
+    "(each `.sql` file is prefixed with the `INSTALL`/`LOAD` of `httpfs` + `spatial`)",
+    "",
+    "### Python",
+    "",
+    "```python",
+    "import duckdb",
+    "con = duckdb.connect()",
+    "df = con.sql(open('query/integrated_nearest_time.sql').read()).df()",
+    "```",
+    "",
+    "### R",
+    "",
+    "```r",
+    "library(DBI)",
+    "con <- dbConnect(duckdb::duckdb())",
+    "sql <- paste(readLines('query/integrated_nearest_time.sql'), collapse = '\\n')",
+    "df  <- dbGetQuery(con, sql)",
+    "```",
+    "",
+    "Or with the **calcofi4r** package — the same helper that generated this bundle:",
+    "",
+    "```r",
+    "# remotes::install_github('calcofi/calcofi4r')",
+    "library(calcofi4r)",
+    "d <- cc_match_ichthyo_by_name(",
+    "  'Sardinops sagax', env_var = 'temperature',",
+    "  date_min = '2018-01-01', date_max = '2018-03-31', relax_matching = TRUE)",
+    "cat(attr(d, 'sql'))   # the portable SQL behind it",
+    "```",
+    "",
+    "## Verify integrity",
+    "",
+    "```sh",
+    "md5sum data/integrated/integrated_nearest_time.csv",
+    "# compare against query/manifest.json -> files[...].md5",
+    "```")
+}
+
+#' Assemble the reproducible portion of a download bundle
+#'
+#' Builds the portable bio + env subqueries from the current filter
+#' \code{params}, runs them (and the integration, once per join method) against
+#' the public GCS release parquet via \code{calcofi4r::cc_match_bio_env()}, and
+#' writes \code{data/original/}, \code{data/integrated/} and \code{query/}
+#' (per-file \code{*.sql}, \code{manifest.json}, \code{REPRODUCE.md}) under
+#' \code{zip_root}. The SQL that is serialized is exactly the SQL that was run.
+#'
+#' @param zip_root Directory to write the bundle into.
+#' @param params Filter params list (from \code{rx$params}): \code{taxa},
+#'   \code{env_var}, \code{sel_qtr}/\code{quarters}, \code{date_range},
+#'   \code{depth_range}, \code{ck_children}/\code{include_children},
+#'   \code{time_window}, \code{dist_window}, \code{zones}.
+#' @param version Release version string; defaults to \code{\link{release_version}()}.
+#' @return Character vector of bundle-relative paths written.
+#' @export
+build_download_bundle <- function(zip_root, params, version = NULL) {
+
+  if (utils::packageVersion("calcofi4r") < "1.2.0")
+    stop(
+      "build_download_bundle() needs calcofi4r >= 1.2.0 (cc_match_bio_env). ",
+      "Update with: remotes::install_github('calcofi/calcofi4r')")
+
+  version <- version %||% release_version()
+
+  # resolve filters from params --------------------------------------------
+  taxa             <- params$taxa
+  sci_names        <- vapply(taxa, extract_scientific_name, character(1),
+                             USE.NAMES = FALSE)
+  include_children <- isTRUE(params$ck_children %||%
+                             params$include_children %||% TRUE)
+  qtr         <- params$sel_qtr %||% params$quarters %||% 1:4
+  date_range  <- params$date_range
+  depth_range <- params$depth_range %||% c(0, 5000)
+  max_time_hr <- params$time_window %||% default_max_hours_diff
+  max_dist_km <- (params$dist_window %||% default_max_meters_diff) / 1000
+
+  # two portable subqueries ------------------------------------------------
+  bio_sql <- build_bio_match_sql(
+    sci_names, qtr, date_range, version, include_children)
+  env_sql <- build_env_match_sql(
+    params$env_var, qtr, date_range, depth_range, version,
+    pad_hours = max_time_hr)
+
+  # GCS-capable connection (httpfs + spatial) ------------------------------
+  con_gcs <- dbConnect(duckdb::duckdb())
+  on.exit(dbDisconnect(con_gcs, shutdown = TRUE), add = TRUE)
+  dbExecute(con_gcs, "INSTALL httpfs; LOAD httpfs;")
+  dbExecute(con_gcs, "INSTALL spatial; LOAD spatial;")
+
+  # writer helpers ---------------------------------------------------------
+  paths      <- character()
+  files_meta <- list()
+  write_file <- function(rel, x) {
+    full <- file.path(zip_root, rel)
+    dir.create(dirname(full), showWarnings = FALSE, recursive = TRUE)
+    if (is.data.frame(x)) {
+      write.csv(x, full, row.names = FALSE, na = "")
+    } else {
+      writeLines(as.character(x), full)
+    }
+    paths <<- c(paths, rel)
+    full
+  }
+  # .sql files are written copy-paste runnable: prefixed with the extension
+  # loads they need to read GCS parquet over HTTPS + compute spatial distance
+  sql_header <- paste(
+    "-- Re-run in DuckDB (CLI, Python or R) against public CalCOFI release",
+    "-- parquet. See REPRODUCE.md. No credentials or API required.",
+    "INSTALL httpfs; LOAD httpfs;",
+    "INSTALL spatial; LOAD spatial;",
+    "", "", sep = "\n")
+  write_sql <- function(rel, sql) write_file(rel, paste0(sql_header, sql, "\n"))
+  add_meta <- function(rel_csv, rel_sql, df, extra = list()) {
+    files_meta[[rel_csv]] <<- c(
+      list(
+        sql    = rel_sql,
+        n_rows = nrow(df),
+        md5    = unname(tools::md5sum(file.path(zip_root, rel_csv)))),
+      extra)
+  }
+
+  # original bio + env -----------------------------------------------------
+  write_sql("query/bio.sql", bio_sql)
+  write_sql("query/env.sql", env_sql)
+  d_bio <- dbGetQuery(con_gcs, bio_sql)
+  d_env <- dbGetQuery(con_gcs, env_sql)
+  write_file("data/original/bio.csv", d_bio)
+  write_file("data/original/env.csv", d_env)
+  add_meta("data/original/bio.csv", "query/bio.sql", d_bio)
+  add_meta("data/original/env.csv", "query/env.sql", d_env)
+
+  # integrated match, once per join method ---------------------------------
+  methods <- c("nearest_time", "nearest_dist", "average")
+  for (m in methods) {
+    d <- calcofi4r::cc_match_bio_env(
+      bio_sql, env_sql,
+      max_dist_km = max_dist_km, max_time_hr = max_time_hr,
+      join_method = m, con = con_gcs, version = version, collect = TRUE)
+    rel_csv <- glue("data/integrated/integrated_{m}.csv")
+    rel_sql <- glue("query/integrated_{m}.sql")
+    write_sql(rel_sql, attr(d, "sql"))
+    write_file(rel_csv, as.data.frame(d))
+    add_meta(rel_csv, rel_sql, d, list(join_method = m))
+  }
+
+  # manifest.json ----------------------------------------------------------
+  manifest <- list(
+    schema_version    = "1.0",
+    generated_at      = format(Sys.time(), tz = "UTC", usetz = TRUE),
+    release_version   = version,
+    calcofi4r_version = as.character(utils::packageVersion("calcofi4r")),
+    gcs_parquet_base  = gcs_parquet_base(version),
+    filters = list(
+      taxa             = as.list(taxa),
+      scientific_names = as.list(sci_names),
+      include_children = include_children,
+      env_var          = params$env_var,
+      quarters         = as.list(as.integer(qtr)),
+      date_range       = as.character(date_range),
+      depth_range_m    = as.list(depth_range),
+      zones            = if (is.null(params$zones))
+        "all locations" else as.list(params$zones)),
+    match_params = list(
+      max_dist_km  = max_dist_km,
+      max_time_hr  = max_time_hr,
+      join_methods = as.list(methods)),
+    gcs_source_urls = as.list(extract_source_urls(c(bio_sql, env_sql))),
+    files           = files_meta)
+  write_file(
+    "query/manifest.json",
+    jsonlite::toJSON(manifest, auto_unbox = TRUE, pretty = TRUE, null = "null"))
+
+  # REPRODUCE.md -----------------------------------------------------------
+  write_file("query/REPRODUCE.md", reproduce_md(manifest))
+
+  paths
+}

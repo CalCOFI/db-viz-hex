@@ -1043,6 +1043,10 @@ server <- function(input, output, session) {
         taxa_tree_builder(rx$df_sp))) })
 
   # download_data ----
+  # Bundles original + summarized data with reproducible SQL. The integrated
+  # bio<->env match is built and run by calcofi4r::cc_match_bio_env() against
+  # public GCS release parquet (see functions.R::build_download_bundle), so the
+  # query/ folder lets anyone re-run it in DuckDB and get identical rows.
   output$download_data <- downloadHandler(
     filename = function() paste0("calcofi_data_", format(Sys.Date(), "%Y%m%d"), ".zip"),
     content = function(file) {
@@ -1058,7 +1062,6 @@ server <- function(input, output, session) {
 
       zip_root <- tempfile(pattern = "calcofi_download_", tmpdir = tempdir())
       dir.create(zip_root, showWarnings = FALSE, recursive = TRUE)
-      dir.create(zip_root, showWarnings = FALSE, recursive = TRUE)
       paths   <- character()
 
       write_data <- function(df, rel_path) {
@@ -1068,62 +1071,37 @@ server <- function(input, output, session) {
         paths <<- c(paths, rel_path)       # <<- adds to the outer variable
       }
 
-      rx$params
+      # keep time/dist windows in rx$params so the README + bundle agree
+      rx$params$time_window <- input$time_window %||% default_max_hours_diff
+      rx$params$dist_window <- input$dist_window %||% default_max_meters_diff
 
+      withProgress(message = "Preparing download", value = 0, {
       for (i in all_sel) {
+        incProgress(1 / length(all_sel), detail = i)
 
         if (i == "raw_sp") {
           req(rx$df_sp)
-          write_data(rx$df_sp |> collect(), "raw_sp.csv")
+          write_data(rx$df_sp |> collect(), "data/original/species.csv")
 
         } else if (i == "raw_env") {
           req(rx$df_env)
-          write_data(rx$df_env |> collect(), "raw_env.csv")
+          write_data(rx$df_env |> collect(), "data/original/environment.csv")
 
         } else if (i == "int") {
-          req(rx$df_sp, rx$df_env)
-
-          max_hours_diff  <- input$time_window %||% default_max_hours_diff
-          max_meters_diff <- input$dist_window %||% default_max_meters_diff
-
-          rx$params$time_window <- max_hours_diff
-          rx$params$dist_window <- max_meters_diff
-
-
-          d_sp <- rx$df_sp |>
-            select(
-              sp_name  = name,
-              sp_dtime = time_start,
-              sp_tally = std_tally,
-              sp_lon   = longitude,
-              sp_lat   = latitude)
-
-          d_env <- rx$df_env |>
-            select(
-              env_dtime = dtime,
-              env_qty   = qty,
-              env_cst   = cast_id,
-              env_depth = depth_m,
-              env_lon   = lon_dec,
-              env_lat   = lat_dec) |>
-            mutate(
-              env_dtime_lwr = sql(glue("env_dtime - INTERVAL {max_hours_diff} HOUR")),
-              env_dtime_upr = sql(glue("env_dtime + INTERVAL {max_hours_diff} HOUR")))
-
-          # join by time difference
-          int_data <- d_sp |>
-            left_join(
-              d_env,
-              # join species to env observations within desired time interval
-              by = join_by(between(sp_dtime, env_dtime_lwr, env_dtime_upr))) |>
-            # compute distance between species and ocean observations
-            mutate(
-              dist_m = sql("ST_Distance_Sphere(ST_Point(sp_lon, sp_lat), ST_Point(env_lon, env_lat))")) |>
-            # get pairs within desired distance
-            filter(
-              dist_m <= max_meters_diff) |> collect()
-
-          write_data(int_data, "integrated_data.csv")
+          # reproducible bundle: data/original/{bio,env}.csv +
+          # data/integrated/integrated_<method>.csv + query/ (per-file *.sql,
+          # manifest.json, REPRODUCE.md) — single source of truth via
+          # calcofi4r::cc_match_bio_env() against GCS release parquet
+          req(rx$params$taxa)
+          bundle_paths <- tryCatch(
+            build_download_bundle(zip_root, isolate(rx$params)),
+            error = function(e) {
+              showNotification(
+                paste("Integrated data / SQL bundle failed:", conditionMessage(e)),
+                type = "error", duration = NULL)
+              character(0)
+            })
+          paths <- c(paths, bundle_paths)
 
         } else if (i == "map") {
           req(rx$df_sp, rx$df_env)
@@ -1133,8 +1111,8 @@ server <- function(input, output, session) {
                                   rx$params$map_params$env_stat) |>
             bind_rows() |> select(-tooltip)
 
-          write_data(sp_hex , "map/species_map.csv")
-          write_data(env_hex, "map/env_map.csv")
+          write_data(sp_hex , "data/summarized/map/species_map.csv")
+          write_data(env_hex, "data/summarized/map/env_map.csv")
 
         } else if (i == "ts") {
           req(rx$df_sp, rx$df_env)
@@ -1142,8 +1120,8 @@ server <- function(input, output, session) {
           sp_ts  <- prep_ts_sp(rx$df_sp, rx$params$ts_params$ts_res)
           env_ts <- prep_ts_env(rx$df_env, rx$params$ts_params$ts_res)
 
-          write_data(sp_ts , "time_series/species_ts.csv")
-          write_data(env_ts, "time_series/ocean_ts.csv")
+          write_data(sp_ts , "data/summarized/time_series/species_ts.csv")
+          write_data(env_ts, "data/summarized/time_series/ocean_ts.csv")
 
         } else if (i == "splot") {
           req(rx$df_sp, rx$df_env)
@@ -1158,16 +1136,17 @@ server <- function(input, output, session) {
                        max_hours_diff  = rx$params$splot_params$time_window,
                        max_meters_diff = rx$params$splot_params$dist_window)
 
-          write_data(data, "scatterplot.csv")
+          write_data(data, "data/summarized/scatterplot.csv")
 
         } else if (i == "dprof") {
 
           sp_data <- rx$df_dprof[[1]]
           env_data <- rx$df_dprof[[2]]
-          write_data(sp_data, "depth_profile/species_dprof.csv")
-          write_data(env_data, "depth_profile/env_dprof.csv")
+          write_data(sp_data, "data/summarized/depth_profile/species_dprof.csv")
+          write_data(env_data, "data/summarized/depth_profile/env_dprof.csv")
         }
       }
+      })  # withProgress
 
       readme_path <- file.path(zip_root, "README.md")
 
@@ -1189,10 +1168,12 @@ server <- function(input, output, session) {
         "",
         glue::glue("- Taxa: {paste(params$taxa, collapse = ', ')}"),
         glue::glue("- Environmental variable: {params$env_var}"),
-        glue::glue("- Quarters: {paste(params$quarters, collapse = ', ')}"),
+        glue::glue(
+          "- Quarters: {paste(params$sel_qtr %||% params$quarters, collapse = ', ')}"),
         glue::glue("- Date range: {params$date_range[1]} to {params$date_range[2]}"),
         glue::glue("- Depth range (m): {params$depth_range[1]}–{params$depth_range[2]}"),
-        glue::glue("- Include children: {params$include_children}"),
+        glue::glue(
+          "- Include children: {params$ck_children %||% params$include_children}"),
         glue::glue(
           "- Spatial filter (zones): {if (is.null(params$zones))
        'All locations' else paste(params$zones, collapse = ', ')}"
@@ -1207,7 +1188,20 @@ server <- function(input, output, session) {
           "dist_window = {params$splot_params$dist_window} m"
         ),
         glue::glue("- Depth profile transect: {params$dprof_params$transect %||% 'NA'}"),
-        glue::glue("- Depth profile buffer (km): {params$dprof_params$buffer %||% 'NA'}")
+        glue::glue("- Depth profile buffer (km): {params$dprof_params$buffer %||% 'NA'}"),
+        "",
+        "## Bundle layout",
+        "",
+        "- `data/original/` — raw species + environmental observations",
+        "- `data/summarized/` — aggregated map / time-series / scatterplot / depth-profile data",
+        "- `data/integrated/` — species matched to environment in time + space",
+        "- `query/` — the **exact, portable SQL** behind each file, plus",
+        "  `manifest.json` and `REPRODUCE.md`",
+        "",
+        paste(
+          "If you included the integrated data, see **`query/REPRODUCE.md`** to",
+          "re-run the same queries against the public CalCOFI release parquet in",
+          "DuckDB (CLI, Python or R) and get identical rows.")
       )
 
       md <- c(

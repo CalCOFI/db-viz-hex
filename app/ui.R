@@ -3,7 +3,10 @@ ui <- page_sidebar(
   title = tagList(
     span(
       a(
-        img(src = "./logo_calcofi.svg", height="50px", .noWS = "after"),
+        img(src = "./logo_calcofi.svg",       height="50px",
+            class = "intapp-logo-dark",  .noWS = "after"),
+        img(src = "./logo_calcofi_light.svg", height="50px",
+            class = "intapp-logo-light", .noWS = "after"),
         href = "https://calcofi.io"),
       "Integrated App")),
 
@@ -11,6 +14,10 @@ ui <- page_sidebar(
     tags$link(rel = "icon", type = "image/svg+xml", href = "logo_calcofi.svg"),
     includeHTML("google-analytics.html"),
     tags$style(HTML("
+    /* swap the logo variant based on the page's bslib theme — the
+       original SVG has WHITE 'CalCOFI.io' text, hidden on light bg. */
+    [data-bs-theme='light'] .intapp-logo-dark  { display: none; }
+    [data-bs-theme='dark']  .intapp-logo-light { display: none; }
     .treeview {
       list-style: none;
       padding-left: 0.1rem;
@@ -214,16 +221,22 @@ ui <- page_sidebar(
 
     nav_panel(
       "Download",
-      "Select the datasets you'd like to download, then click \"Download.\"",
+      markdown(
+        "Select the datasets you'd like to download, then click **Download**.
+         The bundle is organized into `data/original/`, `data/summarized/` and
+         `data/integrated/`, each paired with the exact, portable SQL in a
+         `query/` folder (`manifest.json`, per-file `*.sql`, `REPRODUCE.md`) so
+         the integrated bio↔env match can be re-run anywhere against the
+         public CalCOFI release parquet."),
       checkboxGroupInput(
         "sel_raw_data_download",
         "Raw datasets",
         c(
           "Raw environmental data"    =  "raw_env",
           "Raw species data"          =  "raw_sp",
-          "Integrated data (raw
-           environmental and species
-           combined)"                 =  "int"),
+          "Integrated data + reproducible SQL
+           (species matched to environment;
+           adds the query/ folder)"   =  "int"),
         width = "100%"),
       conditionalPanel(
         condition = "input.sel_raw_data_download.includes('int')",
