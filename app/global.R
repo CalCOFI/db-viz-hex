@@ -93,8 +93,8 @@ d_spatial_layers <- read_csv(
 # pmtiles_base_url <- "https://file.calcofi.io/_spatial"
 pmtiles_base_url <- "https://storage.googleapis.com/calcofi-files-public/_spatial"
 
-# gcloud storage buckets describe gs://calcofi-files-public --format="/Users/bbest/Github/CalCOFI/int-app/data/_cors_file.json"
-# cd ~/Github/CalCOFI/int-app/data
+# gcloud storage buckets describe gs://calcofi-files-public --format="/Users/bbest/Github/CalCOFI/db-viz-hex/data/_cors_file.json"
+# cd ~/Github/CalCOFI/db-viz-hex/data
 # gcloud storage buckets update gs://calcofi-files-public --cors-file=_cors_file.json
 
 # load functions ----

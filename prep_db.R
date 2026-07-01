@@ -1,4 +1,4 @@
-# prep_db.R - build optimized local database for int-app
+# prep_db.R - build optimized local database for db-viz-hex
 #
 # usage:
 #   Rscript prep_db.R              # uses latest release

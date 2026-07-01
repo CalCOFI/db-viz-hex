@@ -2,7 +2,7 @@
 
 The app is available online here:
 
-- https://app.calcofi.io/int
+- https://app.calcofi.io/db-viz-hex
   ![calcofi\_int-app\_2025-10-08.png (2434×1644)](./figures/calcofi_int-app_2025-10-08.png)
 
 You may be presented with a tour dialog when opening:
@@ -18,7 +18,7 @@ constructed from the following datasets:
 
 This app is open-source with code found here:
 
-- [github.com/CalCOFI/int-app](https://github.com/CalCOFI/int-app)
+- [github.com/CalCOFI/db-viz-hex](https://github.com/CalCOFI/db-viz-hex)
 
 The following key technologies enable this app:
 

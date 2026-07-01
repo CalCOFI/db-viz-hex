@@ -7,7 +7,7 @@ constructed from the following datasets:
 
 This app is open-source with code found here:
 
-- [github.com/CalCOFI/int-app](https://github.com/CalCOFI/int-app)
+- [github.com/CalCOFI/db-viz-hex](https://github.com/CalCOFI/db-viz-hex)
 
 The following key technologies enable this app:
 

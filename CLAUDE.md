@@ -135,7 +135,7 @@ sp_data <- sp_query |>
 ## File Organization
 
 ```
-int-app/
+db-viz-hex/
 ├── app.R                    # entry point (sources ui.R and server.R)
 ├── ui.R                     # UI definition
 ├── server.R                 # server logic
