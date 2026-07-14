@@ -4,8 +4,17 @@ server <- function(input, output, session) {
   thematic::thematic_shiny()
 
   # tour ----
-  if (is_tour_on)
-    tour$init()$start()
+  # launch the guided tour on load, unless suppressed with ?tour=off in the URL
+  # (also accepts false/0/no) — handy for clean screenshots; see the db-viz-hex
+  # recipe in CalCOFI.github.io/shots.yml
+  if (is_tour_on) {
+    observeEvent(TRUE, {
+      tour_q   <- getQueryString()[["tour"]]
+      tour_off <- !is.null(tour_q) && tolower(tour_q) %in% c("off", "false", "0", "no")
+      if (!tour_off)
+        tour$init()$start()
+    }, once = TRUE)
+  }
 
   # rx ----
   rx <- reactiveValues(
