@@ -103,11 +103,17 @@ source(here("app/functions_h3t.R"))
 Sys.setenv(CALCOFI_LOG_URL = "https://script.google.com/macros/s/AKfycbz95X4Dlrc1ppd0TeT-5w4I7inkfXxngqZsxTvE_gcrPBv3rPK3lyJOcAJcfAaSjiqF/exec")
 source(here("app/logging.R"))   # query logging -> Google Sheet (CALCOFI_LOG_URL)
 
-# .Renviron not working, so setting manually
+# .Renviron not working, so setting manually.
+# H3T_USE is OFF until the h3t tile service (api-h3t-py) is migrated to the
+# consolidated core schema: it still serves the old wide-column db (hex_h3res1..10,
+# tables invert/casts_h3) and 404/500s for the current release, so the app renders
+# hexagons locally from the release db instead (functions.R derives coarser cells
+# via h3_cell_to_parent(hex_id, res)). Flip back to TRUE once h3t serves hex_id
+# tiles for H3T_RELEASE.
 Sys.setenv(
-  H3T_USE      = TRUE,
+  H3T_USE      = FALSE,
   H3T_BASE_URL = "https://h3t.calcofi.io/h3t",
-  H3T_RELEASE  = "v2026.04.08")
+  H3T_RELEASE  = "v2026.07.15")
 
 # h3t feature flag — when TRUE, the app skips the 10-resolution sf preload and
 # reads hex data on-demand from the h3t tile API (see api-h3t/). default off.
