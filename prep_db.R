@@ -208,3 +208,12 @@ cat(
 )
 
 dbDisconnect(con, shutdown = TRUE)
+
+# repoint the `calcofi_latest.duckdb` symlink at the db we just built, so the app
+# (global.R defaults to data/calcofi_latest.duckdb) serves this version without a
+# manual step. relative target keeps the link valid regardless of mount path.
+latest_link <- file.path(db_dir, "calcofi_latest.duckdb")
+if (file.exists(latest_link) || !is.na(Sys.readlink(latest_link)))
+  unlink(latest_link)
+file.symlink(basename(db_file), latest_link)
+cat("symlinked calcofi_latest.duckdb ->", basename(db_file), "\n")
