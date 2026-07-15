@@ -1097,6 +1097,11 @@ server <- function(input, output, session) {
       rx$params$time_window <- input$time_window %||% default_max_hours_diff
       rx$params$dist_window <- input$dist_window %||% default_max_meters_diff
 
+      # Wrap the whole build: any failure below (an errored product, a missing
+      # reactive) is logged as status="error" and surfaced, instead of aborting
+      # the handler before the success log — which made failed downloads (e.g. a
+      # broken product path) silently show as "ok" in the log Sheet.
+      tryCatch({
       withProgress(message = "Preparing download", value = 0, {
       for (i in all_sel) {
         incProgress(1 / length(all_sel), detail = i)
@@ -1168,7 +1173,7 @@ server <- function(input, output, session) {
         } else if (i == "splot") {
           req(rx$df_sp, rx$df_env)
 
-          if (is.null(method = rx$params$splot_params$method)) {method = rx$params$splot_params$method <- "nearest_time"}
+          if (is.null(rx$params$splot_params$method)) rx$params$splot_params$method <- "nearest_time"
           if (is.null(rx$params$splot_params$time_window)) {rx$params$splot_params$time_window <- default_max_hours_diff}
           if (is.null(rx$params$splot_params$dist_window)) {rx$params$splot_params$dist_window <- default_max_meters_diff}
 
@@ -1181,11 +1186,17 @@ server <- function(input, output, session) {
           write_data(data, "data/summarized/scatterplot.csv")
 
         } else if (i == "dprof") {
-
-          sp_data <- rx$df_dprof[[1]]
-          env_data <- rx$df_dprof[[2]]
-          write_data(sp_data, "data/summarized/depth_profile/species_dprof.csv")
-          write_data(env_data, "data/summarized/depth_profile/env_dprof.csv")
+          # df_dprof is only built once the Depth Profile tab is opened with a
+          # transect selected; skip gracefully (don't crash the whole download).
+          if (is.null(rx$df_dprof) || length(rx$df_dprof) < 2) {
+            showNotification(paste(
+              "Depth Profile data isn't ready — open the Depth Profile tab and pick",
+              "a transect, then re-download. Skipping it for now."),
+              type = "warning", duration = NULL)
+          } else {
+            write_data(rx$df_dprof[[1]], "data/summarized/depth_profile/species_dprof.csv")
+            write_data(rx$df_dprof[[2]], "data/summarized/depth_profile/env_dprof.csv")
+          }
         }
       }
       })  # withProgress
@@ -1271,6 +1282,17 @@ server <- function(input, output, session) {
                 error  = if (.dl_over) sprintf(
                   "total download build %.0fs (> %.0fs budget); client likely disconnected",
                   dl_elapsed(), dl_budget_s) else "")
+      }, error = function(e) {
+        emsg <- conditionMessage(e)
+        if (!nzchar(emsg)) emsg <- "download aborted (a required input was not available)"
+        log_query(session, "download:bundle",
+                  list(products = all_sel, n_files = length(paths)),
+                  n_rows = length(paths), ms = dl_elapsed() * 1000,
+                  status = "error", error = emsg)
+        showNotification(paste("Download failed:", emsg), type = "error",
+                         duration = NULL)
+        stop(e)  # re-raise so the browser gets a clean error, not a partial zip
+      })
     },
     contentType = "application/zip"
   )
