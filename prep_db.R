@@ -27,23 +27,21 @@ db_version <- if (length(args) > 0) args[1] else "latest"
 db_dir <- here("data")
 hex_geo <- here("data/hex.geojson")
 
-# tables to exclude (CTD is too large, not yet used in app)
-exclude_tables <- c(
-  "ctd_cast",
-  "ctd_measurement",
-  "ctd_summary",
-  "ctd_wide",
-  "dic_sample",
-  "dic_measurement",
-  "dic_summary",
-  "cruise"
-)
+# minimal set of source tables needed to build the app database:
+#   obs                — consolidated observations (realm bio|env); carries
+#                        hex_id (H3 res-10) and is partitioned by dataset_key
+#   sample_measurement — std_haul_factor + prop_sorted for bio std_tally
+#   species/taxon/taxa_rank — species picker + taxonomic-children queries
+keep_tables <- c("obs", "sample_measurement", "species", "taxon", "taxa_rank")
 
 cat("fetching catalog for version:", db_version, "\n")
-info <- cc_db_info(version = db_version)
+info       <- cc_db_info(version = db_version)
 all_tables <- info$tables$name
-keep_tables <- setdiff(all_tables, exclude_tables)
-cat("tables to load:", length(keep_tables), "of", length(all_tables), "\n")
+missing    <- setdiff(keep_tables, all_tables)
+if (length(missing) > 0)
+  stop("release ", db_version, " is missing required tables: ",
+       paste(missing, collapse = ", "))
+cat("tables to load:", paste(keep_tables, collapse = ", "), "\n")
 
 # step A: download parquets + create local DuckDB tables ----
 # delete stale DuckDB to avoid schema conflicts from prior materialized views
@@ -70,156 +68,112 @@ con <- cc_get_db(
 dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
 dbExecute(con, "INSTALL spatial; LOAD spatial;")
 
-# helper: generate H3 column expressions for resolutions 1-10
-h3_cols <- function(lat_col, lon_col) {
-  paste(
-    sapply(1:10, function(r) {
-      glue(
-        "h3_latlng_to_cell({lat_col}, {lon_col}, {r})::BIGINT AS hex_h3res{r}"
-      )
-    }),
-    collapse = ",\n    "
-  )
-}
-
-# step B: H3-augmented tables (presorted by finest H3) ----
-cat("building site_h3...\n")
-dbExecute(
-  con,
-  glue(
-    "
-  CREATE OR REPLACE TABLE site_h3 AS
-  SELECT *,
-    {h3_cols('latitude', 'longitude')}
-  FROM site
-  ORDER BY hex_h3res10"
-  )
-)
-
-cat("building casts_h3...\n")
-dbExecute(
-  con,
-  glue(
-    "
-  CREATE OR REPLACE TABLE casts_h3 AS
-  SELECT *,
-    {h3_cols('lat_dec', 'lon_dec')}
-  FROM casts
-  ORDER BY hex_h3res10"
-  )
-)
-
-# step C: bio_obs materialized table ----
-# pre-joins ichthyo -> species -> net -> tow -> site_h3 (single query).
-# ichthyo table now includes egg, larva, AND invert rows (consolidated).
-# pre-computes std_tally, quarter, H3 indices.
-# sorted by scientific_name, time_start for species filtering + temporal queries.
+# step B: bio_obs materialized table ----
+# ichthyo (larvae/eggs + folded inverts) observations from the consolidated
+# `obs` table: realm='bio', dataset_key='swfsc_ichthyo', measurement_type=
+# 'abundance'. taxon_id (VARCHAR) maps 1:1 to species.species_id. std_tally
+# reconstructs the standardized haul tally = abundance * std_haul_factor /
+# prop_sorted, both pulled from sample_measurement (one row per net sample_key).
+# hex_id (H3 res-10) is carried through; coarser resolutions are derived at
+# query time via h3_cell_to_parent(). sorted by scientific_name, time_start.
 cat("building bio_obs...\n")
 dbExecute(
   con,
   "
   CREATE OR REPLACE TABLE bio_obs AS
   SELECT
-    i.life_stage        AS source,
+    o.life_stage        AS source,
     sp.scientific_name,
     sp.common_name,
     sp.species_id,
     sp.worms_id,
-    i.tally,
-    n.std_haul_factor * i.tally / NULLIF(n.prop_sorted, 0) AS std_tally,
-    t.time_start,
-    sh.longitude,
-    sh.latitude,
-    EXTRACT(QUARTER FROM t.time_start)::INTEGER AS quarter,
-    sh.hex_h3res1, sh.hex_h3res2, sh.hex_h3res3, sh.hex_h3res4, sh.hex_h3res5,
-    sh.hex_h3res6, sh.hex_h3res7, sh.hex_h3res8, sh.hex_h3res9, sh.hex_h3res10
-  FROM ichthyo i
-  JOIN species sp ON i.species_id = sp.species_id
-  JOIN net n      ON i.net_uuid   = n.net_uuid
-  JOIN tow t      ON n.tow_uuid   = t.tow_uuid
-  JOIN site_h3 sh ON t.site_uuid  = sh.site_uuid
-  WHERE i.tally IS NOT NULL
-    AND i.measurement_type IS NULL
-  ORDER BY sp.scientific_name, t.time_start"
+    o.measurement_value AS tally,
+    o.measurement_value * shf.measurement_value
+      / NULLIF(ps.measurement_value, 0)         AS std_tally,
+    o.datetime          AS time_start,
+    o.longitude,
+    o.latitude,
+    EXTRACT(QUARTER FROM o.datetime)::INTEGER   AS quarter,
+    o.hex_id
+  FROM obs o
+  JOIN species sp
+    ON TRY_CAST(o.taxon_id AS INTEGER) = sp.species_id
+  LEFT JOIN sample_measurement shf
+    ON o.sample_key = shf.sample_key AND shf.measurement_type = 'std_haul_factor'
+  LEFT JOIN sample_measurement ps
+    ON o.sample_key = ps.sample_key  AND ps.measurement_type = 'prop_sorted'
+  WHERE o.realm            = 'bio'
+    AND o.dataset_key      = 'swfsc_ichthyo'
+    AND o.measurement_type = 'abundance'
+    AND o.measurement_value IS NOT NULL
+  ORDER BY sp.scientific_name, o.datetime"
 )
 
 bio_n <- dbGetQuery(con, "SELECT COUNT(*) AS n FROM bio_obs")$n
 cat("  bio_obs:", format(bio_n, big.mark = ","), "rows\n")
 
-# step D: env_obs materialized table ----
-# pre-joins casts_h3 -> bottle -> bottle_measurement for 15 common types.
-# pre-computes quarter. sorted by measurement_type, datetime_utc.
+# step C: env_obs materialized table ----
+# bottle observations from the consolidated `obs` table: realm='env',
+# dataset_key='calcofi_bottle', restricted to the measurement types exposed in
+# the app UI. hex_id (H3 res-10) is carried through; coarser resolutions derived
+# at query time via h3_cell_to_parent(). column names mirror the prior schema
+# (cast_id, lat_dec, lon_dec, datetime_utc, qty) so downstream code is unchanged.
 cat("building env_obs...\n")
 dbExecute(
   con,
   "
   CREATE OR REPLACE TABLE env_obs AS
   SELECT
-    c.cast_id,
-    c.datetime_utc,
-    EXTRACT(QUARTER FROM c.datetime_utc)::INTEGER AS quarter,
-    c.lat_dec,
-    c.lon_dec,
-    b.bottle_id,
-    b.depth_m,
-    bm.measurement_type,
-    bm.measurement_value AS qty,
-    c.hex_h3res1, c.hex_h3res2, c.hex_h3res3, c.hex_h3res4, c.hex_h3res5,
-    c.hex_h3res6, c.hex_h3res7, c.hex_h3res8, c.hex_h3res9, c.hex_h3res10
-  FROM casts_h3 c
-  JOIN bottle b              ON c.cast_id   = b.cast_id
-  JOIN bottle_measurement bm ON b.bottle_id = bm.bottle_id
-  WHERE bm.measurement_type IN (
-    'temperature', 'salinity', 'oxygen_umol_kg', 'phosphate', 'silicate',
-    'nitrite', 'nitrate', 'chlorophyll_a', 'phaeopigment', 'dynamic_height',
-    'sigma_theta', 'pressure', 'par', 'ph', 'ammonia')
-    AND bm.measurement_value IS NOT NULL
-  ORDER BY bm.measurement_type, c.datetime_utc"
+    o.sample_key        AS cast_id,
+    o.datetime          AS datetime_utc,
+    EXTRACT(QUARTER FROM o.datetime)::INTEGER AS quarter,
+    o.latitude          AS lat_dec,
+    o.longitude         AS lon_dec,
+    o.depth_min_m       AS depth_m,
+    o.measurement_type,
+    o.measurement_value AS qty,
+    o.hex_id
+  FROM obs o
+  WHERE o.realm       = 'env'
+    AND o.dataset_key = 'calcofi_bottle'
+    AND o.measurement_type IN (
+      'temperature', 'salinity', 'oxygen_umol_kg', 'phosphate', 'silicate',
+      'nitrite', 'nitrate', 'chlorophyll_a', 'phaeopigment', 'dynamic_height',
+      'sigma_theta', 'pressure', 'par', 'ph', 'ammonia')
+    AND o.measurement_value IS NOT NULL
+  ORDER BY o.measurement_type, o.datetime"
 )
 
 env_n <- dbGetQuery(con, "SELECT COUNT(*) AS n FROM env_obs")$n
 cat("  env_obs:", format(env_n, big.mark = ","), "rows\n")
 
-# step E: drop intermediate source tables ----
-cat("dropping intermediate tables...\n")
-drop_tables <- c(
-  "ichthyo",
-  "net",
-  "tow",
-  "site",
-  "casts",
-  "bottle",
-  "bottle_measurement",
-  "cast_condition",
-  "segment",
-  "grid",
-  "cruise",
-  "ship",
-  "lookup",
-  "dataset",
-  "_spatial",
-  "_spatial_attr"
-)
-for (tbl in drop_tables) {
-  dbExecute(con, glue("DROP TABLE IF EXISTS \"{tbl}\""))
-}
-
-# step F: generate hex.geojson ----
+# step D: generate hex.geojson ----
+# geometries for every H3 cell referenced by bio_obs / env_obs, at each
+# resolution 1-10. finest (res-10) cells come straight from obs' hex_id; coarser
+# cells are derived with h3_cell_to_parent() and rendered via h3_cell_to_boundary_wkt().
 cat("generating hex.geojson...\n")
-hex_pfx <- "hex_h3res"
+dbExecute(
+  con,
+  "
+  CREATE OR REPLACE TEMP TABLE hex_base AS
+  SELECT DISTINCT hex_id FROM bio_obs WHERE hex_id IS NOT NULL
+  UNION
+  SELECT DISTINCT hex_id FROM env_obs WHERE hex_id IS NOT NULL"
+)
 hex_list <- map(1:10, function(res) {
-  hex_fld <- glue("{hex_pfx}{res}")
   dbGetQuery(
     con,
     glue(
       "
+    WITH parents AS (
+      SELECT h3_cell_to_parent(hex_id, {res}) AS parent FROM hex_base)
     SELECT
-      HEX({hex_fld})                                AS hex_id,
-      {res}                                          AS hex_res,
-      COUNT(*)                                       AS n_sites,
-      h3_cell_to_boundary_wkt(HEX({hex_fld}))       AS hex_wkt
-    FROM (SELECT DISTINCT {hex_fld} FROM site_h3 WHERE {hex_fld} IS NOT NULL)
-    GROUP BY {hex_fld}"
+      HEX(parent)                          AS hex_id,
+      {res}                                AS hex_res,
+      COUNT(*)                             AS n_sites,
+      h3_cell_to_boundary_wkt(HEX(parent)) AS hex_wkt
+    FROM parents
+    GROUP BY parent"
     )
   ) |>
     st_as_sf(wkt = "hex_wkt", crs = 4326) |>
@@ -228,6 +182,21 @@ hex_list <- map(1:10, function(res) {
 sf_hex <- bind_rows(hex_list)
 st_write(sf_hex, hex_geo, delete_dsn = TRUE, quiet = TRUE)
 cat("  hex.geojson:", nrow(sf_hex), "hexagons across 10 resolutions\n")
+
+# step E: drop build-only objects (keep species/taxon/taxa_rank + bio_obs/env_obs) ----
+cat("dropping build-only tables...\n")
+drop_obj <- function(con, name) {
+  # obs is a remote (partitioned) VIEW; sample_measurement is a local TABLE
+  ok <- tryCatch(
+    { dbExecute(con, glue("DROP TABLE IF EXISTS \"{name}\"")); TRUE },
+    error = function(e) FALSE)
+  if (!ok)
+    tryCatch(dbExecute(con, glue("DROP VIEW IF EXISTS \"{name}\"")),
+             error = function(e) NULL)
+}
+drop_obj(con, "obs")
+drop_obj(con, "sample_measurement")
+dbExecute(con, "DROP TABLE IF EXISTS hex_base")
 
 # summary ----
 final_tables <- dbListTables(con) |> sort()

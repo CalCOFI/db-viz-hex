@@ -15,11 +15,12 @@ h3t_base_url <- function() {
 # is a literal that the server will substitute per tile based on zoom; we use
 # a fixed resolution for now (configurable via the `res` arg).
 build_sp_sql <- function(sp_name, qtr, date_range, include_children = TRUE) {
-  # note: emits the literal placeholder `hex_h3res{{res}}`. the h3t API
-  # substitutes `{{res}}` with the tile's effective H3 resolution (derived
-  # from zoom) before parsing. this lets one cached SQL string serve every
-  # zoom level.
-  hex_col <- DBI::SQL("hex_h3res{{res}}")
+  # note: emits `h3_cell_to_parent(hex_id, {{res}})` with the literal placeholder
+  # `{{res}}`. the h3t API substitutes `{{res}}` with the tile's effective H3
+  # resolution (derived from zoom) before parsing, so one cached SQL string
+  # serves every zoom level. the parent cell (UBIGINT, < 2^63) casts to BIGINT
+  # as before — the API's cell_id contract is unchanged. requires `LOAD h3`.
+  hex_col <- DBI::SQL("h3_cell_to_parent(hex_id, {{res}})")
   base_sql <- glue::glue_sql(
     "SELECT {hex_col} AS cell_id, AVG(std_tally) AS value, COUNT(*) AS n
        FROM bio_obs
@@ -56,7 +57,7 @@ build_sp_sql <- function(sp_name, qtr, date_range, include_children = TRUE) {
 build_env_sql <- function(measurement_type, qtr, date_range, depth_range,
                           stat = c("mean", "median", "min", "max", "sd")) {
   stat <- match.arg(stat)
-  hex_col <- DBI::SQL("hex_h3res{{res}}")
+  hex_col <- DBI::SQL("h3_cell_to_parent(hex_id, {{res}})")
   agg <- switch(stat,
     mean   = "AVG(qty)",
     median = "MEDIAN(qty)",

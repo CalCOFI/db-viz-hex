@@ -118,7 +118,8 @@ get_taxon_parentage <- function(taxonID, con, authority = "WoRMS"){
 #'     \item \code{time_start} - tow start datetime
 #'     \item \code{longitude}, \code{latitude} - spatial coordinates
 #'     \item \code{quarter} - quarter (1-4)
-#'     \item \code{hex_h3res*} - H3 hexagon indices at multiple resolutions
+#'     \item \code{hex_id} - H3 cell index at resolution 10 (coarser resolutions
+#'       derived at query time via \code{h3_cell_to_parent()})
 #'   }
 #'
 #' @details
@@ -224,7 +225,8 @@ get_sp <- function(sp_name, qtr, date_range, ck_children = TRUE) {
 #'     \item \code{lat_dec} - latitude (decimal degrees)
 #'     \item \code{lon_dec} - longitude (decimal degrees)
 #'     \item \code{qty} - environmental variable value
-#'     \item \code{hex_h3res*} - H3 hexagon indices at multiple resolutions
+#'     \item \code{hex_id} - H3 cell index at resolution 10 (coarser resolutions
+#'       derived at query time via \code{h3_cell_to_parent()})
 #'   }
 #'
 #' @details
@@ -269,7 +271,7 @@ get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
       lat_dec,
       lon_dec,
       qty,
-      starts_with("hex_h3res"))
+      hex_id)
 
   if (debug) {
     n_rows <- df_env |> summarize(n = n()) |> pull(n)
@@ -296,7 +298,7 @@ get_env <- function(env_var, qtr, date_range, min_depth, max_depth) {
 #' Converts species occurrence/abundance data into multi-resolution H3 hexagonal
 #' bins with aggregated statistics and geometries for mapping.
 #'
-#' @param df_sp dbplyr lazy table with columns: \code{hex_h3res*}, \code{std_tally}
+#' @param df_sp dbplyr lazy table with columns: \code{hex_id}, \code{std_tally}
 #' @param res_range Integer vector of H3 resolution levels to generate (e.g., 3:5)
 #'
 #' @return List of sf objects, one per resolution level, each with columns:
@@ -335,12 +337,12 @@ prep_sp_hex <- function(df_sp, res_range) {
   df_sp_temp <- df_sp |>
     compute()
 
-  # create and combine tables for each resolution
+  # create and combine tables for each resolution — derive the parent H3 cell at
+  # resolution .x from the stored res-10 hex_id (runs in DuckDB via h3_cell_to_parent)
   combined_res_tbl <- map(res_range, ~{
-    hex_fld <- glue("hex_h3res{.x}")
-
     df_sp_temp |>
-      select(hex_int = all_of(hex_fld), std_tally, time_start) |>
+      mutate(hex_int = h3_cell_to_parent(hex_id, .x)) |>
+      select(hex_int, std_tally, time_start) |>
       mutate(resolution = .x)
   }) |>
     reduce(union_all)
@@ -393,7 +395,7 @@ prep_sp_hex <- function(df_sp, res_range) {
 #' with aggregated statistics and geometries for mapping. Uses dbplyr lazy
 #' evaluation to defer collection until after aggregation.
 #'
-#' @param df_env dbplyr lazy table with H3 index columns (\code{hex_h3res*}) and \code{qty} column
+#' @param df_env dbplyr lazy table with H3 index column (\code{hex_id}) and \code{qty} column
 #' @param res_range Integer vector of H3 resolution levels to generate (e.g., 3:5)
 #' @param env_stat Character string specifying aggregation function: "mean", "median", "min", "max", "sd"
 #'
@@ -434,12 +436,12 @@ prep_env_hex <- function(df_env, res_range, env_stat) {
   df_env_temp <- df_env |>
     compute()
 
-  # create and combine tables for each resolution
+  # create and combine tables for each resolution — derive the parent H3 cell at
+  # resolution .x from the stored res-10 hex_id (runs in DuckDB via h3_cell_to_parent)
   combined_res_tbl <- map(res_range, ~{
-    hex_fld <- glue("hex_h3res{.x}")
-
     df_env_temp |>
-      select(hex_int = all_of(hex_fld), qty, dtime) |>
+      mutate(hex_int = h3_cell_to_parent(hex_id, .x)) |>
+      select(hex_int, qty, dtime) |>
       mutate(resolution = .x)
   }) |>
     reduce(union_all)
