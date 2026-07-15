@@ -36,7 +36,7 @@ exclude_tables <- c(
   "dic_sample",
   "dic_measurement",
   "dic_summary",
-  "cruise_summary"
+  "cruise"
 )
 
 cat("fetching catalog for version:", db_version, "\n")
