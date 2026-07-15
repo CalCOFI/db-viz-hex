@@ -31,10 +31,15 @@
 #   //            .setMimeType(ContentService.MimeType.JSON);
 #   // }
 
+
 librarian::shelf(httr2, jsonlite, quiet = TRUE)
 
-CALCOFI_LOG_URL <- Sys.getenv("CALCOFI_LOG_URL", "")
-APP_VERSION     <- tryCatch(readLines("VERSION", warn = FALSE)[1], error = function(e) NA_character_)
+# read the endpoint at CALL time (not source time) so it can be set any time via
+# Sys.setenv(CALCOFI_LOG_URL = "…")  — note: `NAME = value`, NOT a comma — or in
+# .Renviron on the server. Empty => logging is a silent no-op.
+APP_VERSION <- tryCatch(
+  if (file.exists(here::here("VERSION"))) readLines(here::here("VERSION"), warn = FALSE)[1] else NA_character_,
+  error = function(e) NA_character_)
 
 # best-effort client IP: X-Forwarded-For (behind the shinyapps/nginx proxy) then
 # the direct REMOTE_ADDR. Never errors.
@@ -51,7 +56,8 @@ client_ip <- function(session) {
 # no network) is swallowed so it never affects the user's query.
 log_query <- function(session, event, params = list(), n_rows = NA,
                       ms = NA, status = "ok", error = NULL) {
-  if (!nzchar(CALCOFI_LOG_URL)) return(invisible(FALSE))
+  log_url <- Sys.getenv("CALCOFI_LOG_URL", "")
+  if (!nzchar(log_url)) return(invisible(FALSE))
   row <- list(
     ip          = client_ip(session),
     session     = tryCatch(session$token, error = function(e) NA_character_),
@@ -63,7 +69,7 @@ log_query <- function(session, event, params = list(), n_rows = NA,
     error       = error %||% "",
     app_version = APP_VERSION)
   tryCatch(
-    httr2::request(CALCOFI_LOG_URL) |>
+    httr2::request(log_url) |>
       httr2::req_body_json(row) |>
       httr2::req_timeout(4) |>
       httr2::req_error(is_error = function(resp) FALSE) |>
