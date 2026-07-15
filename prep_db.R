@@ -87,6 +87,7 @@ dbExecute(
     sp.common_name,
     sp.species_id,
     sp.worms_id,
+    tx.parentNameUsageID AS parent_id,
     o.measurement_value AS tally,
     o.measurement_value * shf.measurement_value
       / NULLIF(ps.measurement_value, 0)         AS std_tally,
@@ -98,6 +99,9 @@ dbExecute(
   FROM obs o
   JOIN species sp
     ON TRY_CAST(o.taxon_id AS INTEGER) = sp.species_id
+  -- WoRMS parent taxon id, needed by taxa_tree_builder's (worms_id, parent_id) grouping
+  LEFT JOIN taxon tx
+    ON sp.worms_id = tx.taxonID AND tx.authority = 'WoRMS'
   LEFT JOIN sample_measurement shf
     ON o.sample_key = shf.sample_key AND shf.measurement_type = 'std_haul_factor'
   LEFT JOIN sample_measurement ps
