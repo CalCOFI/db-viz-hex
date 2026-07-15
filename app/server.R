@@ -1069,6 +1069,19 @@ server <- function(input, output, session) {
         return(NULL)
       }
 
+      # download timing + budget. The zip only streams to the browser at the very
+      # END (after all the CSVs are built), so a server-side build that runs long
+      # almost certainly outlived the client connection — the user gets a
+      # truncated response ("Site wasn't available") even though the server
+      # "succeeded". We log any build past this budget as a `timeout` error so the
+      # log Sheet shows the real user-facing failure instead of a false ok.
+      # Env-overridable (CALCOFI_DOWNLOAD_TIMEOUT_SEC).
+      dl_t0        <- Sys.time()
+      dl_elapsed   <- function() as.numeric(difftime(Sys.time(), dl_t0, units = "secs"))
+      dl_budget_s  <- suppressWarnings(as.numeric(
+        Sys.getenv("CALCOFI_DOWNLOAD_TIMEOUT_SEC", "120")))
+      if (is.na(dl_budget_s) || dl_budget_s <= 0) dl_budget_s <- 120
+
       zip_root <- tempfile(pattern = "calcofi_download_", tmpdir = tempdir())
       dir.create(zip_root, showWarnings = FALSE, recursive = TRUE)
       paths   <- character()
@@ -1114,9 +1127,22 @@ server <- function(input, output, session) {
                 type = "error", duration = NULL)
               character(0)
             })
-          if (length(bundle_paths))
+          if (length(bundle_paths)) {
+            .over   <- .ms() > dl_budget_s * 1000
+            .status <- if (.over) "timeout" else "ok"
+            .errmsg <- if (.over) sprintf(
+              "integrated bundle build took %.0fs (> %.0fs budget); client likely disconnected before the zip streamed",
+              .ms() / 1000, dl_budget_s) else ""
             log_query(session, "download:integrated_bundle", isolate(rx$params),
-                      n_rows = length(bundle_paths), ms = .ms(), status = "ok")
+                      n_rows = length(bundle_paths), ms = .ms(),
+                      status = .status, error = .errmsg)
+            if (.over)
+              showNotification(paste(
+                "The integrated data bundle took longer than expected to build,",
+                "so your download may not have started. Narrow the filters",
+                "(fewer taxa, shorter date range) and try again."),
+                type = "warning", duration = NULL)
+          }
           paths <- c(paths, bundle_paths)
 
         } else if (i == "map") {
@@ -1233,6 +1259,18 @@ server <- function(input, output, session) {
       paths <- c(paths, "README.md", "README.html")
 
       zip::zip(zipfile = file, files = paths, root = zip_root, include_directories = TRUE)
+
+      # overall download log — one row per Download click. Flagged `timeout` (an
+      # error state) when the total server build exceeded the budget, since the
+      # user almost certainly never received the zip. See dl_budget_s above.
+      .dl_over   <- dl_elapsed() > dl_budget_s
+      log_query(session, "download:bundle",
+                list(products = all_sel, n_files = length(paths)),
+                n_rows = length(paths), ms = dl_elapsed() * 1000,
+                status = if (.dl_over) "timeout" else "ok",
+                error  = if (.dl_over) sprintf(
+                  "total download build %.0fs (> %.0fs budget); client likely disconnected",
+                  dl_elapsed(), dl_budget_s) else "")
     },
     contentType = "application/zip"
   )
