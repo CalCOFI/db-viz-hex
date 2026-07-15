@@ -2025,33 +2025,35 @@ build_bio_match_sql <- function(
     species_where <- "sp.worms_id IN (SELECT taxonID FROM taxon_tree)"
   }
 
+  # read the consolidated core `obs` (ichthyo abundance) + effort from
+  # `sample_measurement` — the per-dataset ichthyo/net/tow/site tables are retired.
+  # Mirrors calcofi4r::.cc_bio_sql_ichthyo (kept 1:1 with the app matcher).
   glue(
     "  {prefix}SELECT
-    i.ichthyo_uuid::VARCHAR AS bio_id,
-    t.time_start            AS bio_datetime,
-    s.longitude             AS bio_lon,
-    s.latitude              AS bio_lat,
-    n.std_haul_factor * i.tally / nullif(n.prop_sorted, 0) AS bio_value,
+    o.obs_id::VARCHAR AS bio_id,
+    o.datetime        AS bio_datetime,
+    o.longitude       AS bio_lon,
+    o.latitude        AS bio_lat,
+    o.measurement_value * shf.measurement_value / nullif(ps.measurement_value, 0) AS bio_value,
     sp.scientific_name,
     sp.common_name,
     sp.worms_id,
-    i.life_stage,
-    i.tally,
-    extract(quarter FROM t.time_start)::INTEGER AS quarter
-  FROM read_parquet('{base}/ichthyo.parquet') i
-  JOIN read_parquet('{base}/species.parquet') sp ON i.species_id = sp.species_id
-  JOIN read_parquet('{base}/net.parquet')     n  ON i.net_uuid   = n.net_uuid
-  JOIN read_parquet('{base}/tow.parquet')     t  ON n.tow_uuid   = t.tow_uuid
-  JOIN read_parquet('{base}/site.parquet')    s  ON t.site_uuid  = s.site_uuid
-  WHERE i.tally IS NOT NULL
-    AND i.measurement_type IS NULL
-    AND t.time_start IS NOT NULL
-    AND s.longitude IS NOT NULL
-    AND s.latitude IS NOT NULL
+    o.life_stage,
+    o.measurement_value AS tally,
+    extract(quarter FROM o.datetime)::INTEGER AS quarter
+  FROM read_parquet('{base}/obs.parquet') o
+  JOIN read_parquet('{base}/species.parquet') sp ON CAST(o.taxon_id AS INTEGER) = sp.species_id
+  LEFT JOIN read_parquet('{base}/sample_measurement.parquet') shf ON shf.sample_key = o.sample_key AND shf.measurement_type = 'std_haul_factor'
+  LEFT JOIN read_parquet('{base}/sample_measurement.parquet') ps  ON ps.sample_key  = o.sample_key AND ps.measurement_type = 'prop_sorted'
+  WHERE o.realm = 'bio' AND o.dataset_key = 'swfsc_ichthyo' AND o.measurement_type = 'abundance'
+    AND o.measurement_value IS NOT NULL
+    AND o.datetime IS NOT NULL
+    AND o.longitude IS NOT NULL
+    AND o.latitude IS NOT NULL
     AND {species_where}
-    AND extract(quarter FROM t.time_start) IN ({qtrs})
-    AND t.time_start >= TIMESTAMP '{d1}'
-    AND t.time_start <= TIMESTAMP '{d2}'")
+    AND extract(quarter FROM o.datetime) IN ({qtrs})
+    AND o.datetime >= TIMESTAMP '{d1}'
+    AND o.datetime <= TIMESTAMP '{d2}'")
 }
 
 #' Build the environmental (CTD-bottle) match subquery
@@ -2080,28 +2082,29 @@ build_env_match_sql <- function(
   dmin <- depth_range[1]
   dmax <- depth_range[2]
 
+  # read the consolidated core `obs` (env realm, bottle) — the per-dataset
+  # bottle_measurement/bottle/casts tables are retired. Mirrors
+  # calcofi4r::.cc_env_sql.
   glue(
     "  SELECT
-    bm.bottle_measurement_id AS env_id,
-    c.datetime_utc           AS env_datetime,
-    c.lon_dec                AS env_lon,
-    c.lat_dec                AS env_lat,
-    bm.measurement_value     AS env_value,
-    b.depth_m                AS env_depth_m,
-    bm.measurement_type      AS measurement_type
-  FROM read_parquet('{base}/bottle_measurement.parquet') bm
-  JOIN read_parquet('{base}/bottle.parquet') b ON bm.bottle_id = b.bottle_id
-  JOIN read_parquet('{base}/casts.parquet')  c ON b.cast_id    = c.cast_id
-  WHERE bm.measurement_type = '{env_var}'
-    AND bm.measurement_value IS NOT NULL
-    AND c.datetime_utc IS NOT NULL
-    AND c.lon_dec IS NOT NULL
-    AND c.lat_dec IS NOT NULL
-    AND b.depth_m >= {dmin}
-    AND b.depth_m <= {dmax}
-    AND extract(quarter FROM c.datetime_utc) IN ({qtrs})
-    AND c.datetime_utc >= TIMESTAMP '{d1}' - INTERVAL '{pad_hours} hours'
-    AND c.datetime_utc <= TIMESTAMP '{d2}' + INTERVAL '{pad_hours} hours'")
+    o.obs_id             AS env_id,
+    o.datetime           AS env_datetime,
+    o.longitude          AS env_lon,
+    o.latitude           AS env_lat,
+    o.measurement_value  AS env_value,
+    o.depth_min_m        AS env_depth_m,
+    o.measurement_type   AS measurement_type
+  FROM read_parquet('{base}/obs.parquet') o
+  WHERE o.realm = 'env' AND o.dataset_key = 'calcofi_bottle' AND o.measurement_type = '{env_var}'
+    AND o.measurement_value IS NOT NULL
+    AND o.datetime IS NOT NULL
+    AND o.longitude IS NOT NULL
+    AND o.latitude IS NOT NULL
+    AND o.depth_min_m >= {dmin}
+    AND o.depth_min_m <= {dmax}
+    AND extract(quarter FROM o.datetime) IN ({qtrs})
+    AND o.datetime >= TIMESTAMP '{d1}' - INTERVAL '{pad_hours} hours'
+    AND o.datetime <= TIMESTAMP '{d2}' + INTERVAL '{pad_hours} hours'")
 }
 
 #' Render the REPRODUCE.md walk-through for a download bundle
