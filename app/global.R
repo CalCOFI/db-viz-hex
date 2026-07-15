@@ -100,6 +100,7 @@ pmtiles_base_url <- "https://storage.googleapis.com/calcofi-files-public/_spatia
 # load functions ----
 source(here("app/functions.R"))
 source(here("app/functions_h3t.R"))
+source(here("app/logging.R"))   # query logging -> Google Sheet (CALCOFI_LOG_URL)
 
 # .Renviron not working, so setting manually
 Sys.setenv(

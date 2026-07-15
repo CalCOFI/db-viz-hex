@@ -670,14 +670,14 @@ server <- function(input, output, session) {
     drawn_polygon <- get_drawn_features(maplibre_proxy("spatial_filter_map"))
     if (debug) message("Spatial filter:", if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) "custom polygon" else "none")
 
-    # retrieve data (lazy tables from database)
-    df_sp <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children)
-    df_env <- get_env(
-      sel_env_var,
-      sel_qtr,
-      sel_date_range,
-      sel_depth_range[1],
-      sel_depth_range[2])
+    # retrieve data (lazy tables from database) — logged (species + env queries)
+    df_sp <- with_query_log(session, "map:get_sp",
+      list(taxa = sel_name, qtr = sel_qtr, date = as.character(sel_date_range), children = ck_children),
+      get_sp(sel_name, sel_qtr, sel_date_range, ck_children))
+    df_env <- with_query_log(session, "map:get_env",
+      list(var = sel_env_var, qtr = sel_qtr, date = as.character(sel_date_range),
+           depth = sel_depth_range),
+      get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2]))
 
     # Apply spatial filter based on priority: drawn polygon > selected zones > all data
     if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) {
@@ -1102,14 +1102,21 @@ server <- function(input, output, session) {
           # manifest.json, REPRODUCE.md) — single source of truth via
           # calcofi4r::cc_match_bio_env() against GCS release parquet
           req(rx$params$taxa)
+          .t0 <- Sys.time()
+          .ms <- function() as.numeric(difftime(Sys.time(), .t0, units = "secs")) * 1000
           bundle_paths <- tryCatch(
             build_download_bundle(zip_root, isolate(rx$params)),
             error = function(e) {
+              log_query(session, "download:integrated_bundle", isolate(rx$params),
+                        ms = .ms(), status = "error", error = conditionMessage(e))
               showNotification(
                 paste("Integrated data / SQL bundle failed:", conditionMessage(e)),
                 type = "error", duration = NULL)
               character(0)
             })
+          if (length(bundle_paths))
+            log_query(session, "download:integrated_bundle", isolate(rx$params),
+                      n_rows = length(bundle_paths), ms = .ms(), status = "ok")
           paths <- c(paths, bundle_paths)
 
         } else if (i == "map") {
