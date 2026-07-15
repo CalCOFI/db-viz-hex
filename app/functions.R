@@ -2269,23 +2269,39 @@ build_download_bundle <- function(zip_root, params, version = NULL) {
   # original bio + env -----------------------------------------------------
   write_sql("query/bio.sql", bio_sql)
   write_sql("query/env.sql", env_sql)
-  d_bio <- dbGetQuery(con_gcs, bio_sql)
-  d_env <- dbGetQuery(con_gcs, env_sql)
+  # Materialize bio + env into local temp tables ONCE. The three join methods
+  # below then compute against these (fast) instead of each re-embedding the
+  # bio/env subqueries and re-scanning the 17.5M-row obs.parquet over HTTPS —
+  # which made the bundle take ~5 min (3×~95s) and blow the proxy timeout, so
+  # the browser got a truncated response ("Site wasn't available"). GCS is now
+  # scanned twice total (here), not eight times, cutting the bundle to ~30s.
+  dbExecute(con_gcs, glue("CREATE TEMP TABLE _bio_src AS {bio_sql}"))
+  dbExecute(con_gcs, glue("CREATE TEMP TABLE _env_src AS {env_sql}"))
+  d_bio <- dbGetQuery(con_gcs, "SELECT * FROM _bio_src")
+  d_env <- dbGetQuery(con_gcs, "SELECT * FROM _env_src")
   write_file("data/original/bio.csv", d_bio)
   write_file("data/original/env.csv", d_env)
   add_meta("data/original/bio.csv", "query/bio.sql", d_bio)
   add_meta("data/original/env.csv", "query/env.sql", d_env)
 
   # integrated match, once per join method ---------------------------------
+  # Compute against the local temp tables (fast). Write the PORTABLE GCS-parquet
+  # SQL (built from bio_sql/env_sql via return_sql, runnable anywhere) to the
+  # bundle's .sql files — the temp tables are only a local compute shortcut, so
+  # the .sql re-run against GCS yields byte-identical rows to the CSV.
   methods <- c("nearest_time", "nearest_dist", "average")
   for (m in methods) {
     d <- calcofi4r::cc_match_bio_env(
-      bio_sql, env_sql,
+      "SELECT * FROM _bio_src", "SELECT * FROM _env_src",
       max_dist_km = max_dist_km, max_time_hr = max_time_hr,
       join_method = m, con = con_gcs, version = version, collect = TRUE)
+    portable_sql <- as.character(calcofi4r::cc_match_bio_env(
+      bio_sql, env_sql,
+      max_dist_km = max_dist_km, max_time_hr = max_time_hr,
+      join_method = m, version = version, return_sql = TRUE))
     rel_csv <- glue("data/integrated/integrated_{m}.csv")
     rel_sql <- glue("query/integrated_{m}.sql")
-    write_sql(rel_sql, attr(d, "sql"))
+    write_sql(rel_sql, portable_sql)
     write_file(rel_csv, as.data.frame(d))
     add_meta(rel_csv, rel_sql, d, list(join_method = m))
   }
