@@ -2005,24 +2005,21 @@ build_bio_match_sql <- function(
   d2   <- as.character(date_range[2])
 
   prefix        <- ""
-  species_where <- glue("sp.scientific_name IN ({nm})")
+  species_where <- glue("t.scientific_name IN ({nm})")
   if (isTRUE(include_children)) {
+    # unified taxon: seed by scientific_name, walk descendants via parent_taxon_key
     prefix <- glue(
       "WITH RECURSIVE taxon_tree AS (
-      SELECT taxonID
+      SELECT taxon_key
       FROM read_parquet('{base}/taxon.parquet')
-      WHERE authority = 'WoRMS'
-        AND taxonID IN (
-          SELECT worms_id FROM read_parquet('{base}/species.parquet')
-          WHERE scientific_name IN ({nm}))
+      WHERE scientific_name IN ({nm})
     UNION ALL
-      SELECT t.taxonID
+      SELECT t.taxon_key
       FROM read_parquet('{base}/taxon.parquet') t
-      JOIN taxon_tree tt ON t.parentNameUsageID = tt.taxonID
-      WHERE t.authority = 'WoRMS'
+      JOIN taxon_tree tt ON t.parent_taxon_key = tt.taxon_key
   )
   ")
-    species_where <- "sp.worms_id IN (SELECT taxonID FROM taxon_tree)"
+    species_where <- "o.taxon_key IN (SELECT taxon_key FROM taxon_tree)"
   }
 
   # read the consolidated core `obs` (ichthyo abundance) + effort from
@@ -2035,14 +2032,14 @@ build_bio_match_sql <- function(
     o.longitude       AS bio_lon,
     o.latitude        AS bio_lat,
     o.measurement_value * shf.measurement_value / nullif(ps.measurement_value, 0) AS bio_value,
-    sp.scientific_name,
-    sp.common_name,
-    sp.worms_id,
+    t.scientific_name,
+    t.common_name,
+    t.worms_id,
     o.life_stage,
     o.measurement_value AS tally,
     extract(quarter FROM o.datetime)::INTEGER AS quarter
   FROM read_parquet('{base}/obs.parquet') o
-  JOIN read_parquet('{base}/species.parquet') sp ON CAST(o.taxon_id AS INTEGER) = sp.species_id
+  JOIN read_parquet('{base}/taxon.parquet') t ON t.taxon_key = o.taxon_key
   LEFT JOIN read_parquet('{base}/sample_measurement.parquet') shf ON shf.sample_key = o.sample_key AND shf.measurement_type = 'std_haul_factor'
   LEFT JOIN read_parquet('{base}/sample_measurement.parquet') ps  ON ps.sample_key  = o.sample_key AND ps.measurement_type = 'prop_sorted'
   WHERE o.realm = 'bio' AND o.dataset_key = 'swfsc_ichthyo' AND o.measurement_type = 'abundance'

@@ -31,8 +31,11 @@ hex_geo <- here("data/hex.geojson")
 #   obs                — consolidated observations (realm bio|env); carries
 #                        hex_id (H3 res-10) and is partitioned by dataset_key
 #   sample_measurement — std_haul_factor + prop_sorted for bio std_tally
-#   species/taxon/taxa_rank — species picker + taxonomic-children queries
-keep_tables <- c("obs", "sample_measurement", "species", "taxon", "taxa_rank")
+#   taxon/dataset_taxon — unified taxon reference + per-dataset crosswalk; the
+#                        app's picker + taxa-tree queries want the legacy
+#                        `species` + WoRMS-hierarchy `taxon` shapes, so we derive
+#                        those (+ `taxa_rank`) locally from these below.
+keep_tables <- c("obs", "sample_measurement", "taxon", "dataset_taxon")
 
 cat("fetching catalog for version:", db_version, "\n")
 info       <- cc_db_info(version = db_version)
@@ -68,10 +71,44 @@ con <- cc_get_db(
 dbExecute(con, "INSTALL h3 FROM community; LOAD h3;")
 dbExecute(con, "INSTALL spatial; LOAD spatial;")
 
+# step A2: legacy taxon shims from the unified refs ----
+# The release now ships a single unified `taxon` (keyed by taxon_key = worms:<id>
+# / itis:<id>) + a `dataset_taxon` crosswalk, replacing the old per-dataset
+# `species` / WoRMS-hierarchy `taxon` / `taxa_rank`. The app's picker (global.R)
+# and taxa-tree (functions.R::taxa_tree_builder / get_taxon_children) still expect
+# those legacy shapes, so derive them here — no app-code change needed.
+dbExecute(con, "ALTER TABLE taxon RENAME TO taxon_u")
+# legacy `species` (CalCOFI ichthyo list) + a taxon_key column so bio_obs joins obs
+dbExecute(con, "
+  CREATE OR REPLACE TABLE species AS
+  SELECT dt.taxon_key,
+         TRY_CAST(dt.ds_taxa_code AS INTEGER) AS species_id,
+         t.scientific_name, t.common_name, t.worms_id, t.itis_id
+  FROM dataset_taxon dt JOIN taxon_u t USING (taxon_key)
+  WHERE dt.dataset_key = 'swfsc_ichthyo'")
+# legacy WoRMS-hierarchy `taxon` (authority/taxonID/parentNameUsageID/…) from the
+# worms:-keyed rows; parentNameUsageID = the integer in the parent's taxon_key
+dbExecute(con, "
+  CREATE OR REPLACE TABLE taxon AS
+  SELECT 'WoRMS'                                              AS authority,
+         worms_id                                            AS taxonID,
+         worms_id                                            AS acceptedNameUsageID,
+         TRY_CAST(replace(parent_taxon_key,'worms:','') AS INTEGER) AS parentNameUsageID,
+         scientific_name                                     AS scientificName,
+         rank                                                AS taxonRank,
+         taxonomic_status                                    AS taxonomicStatus
+  FROM taxon_u WHERE taxon_key LIKE 'worms:%' AND worms_id IS NOT NULL")
+# legacy `taxa_rank` (rank -> order) folded into unified taxon.rank_order
+dbExecute(con, "
+  CREATE OR REPLACE TABLE taxa_rank AS
+  SELECT DISTINCT rank AS taxonRank, rank_order
+  FROM taxon_u WHERE rank IS NOT NULL")
+
 # step B: bio_obs materialized table ----
 # ichthyo (larvae/eggs + folded inverts) observations from the consolidated
 # `obs` table: realm='bio', dataset_key='swfsc_ichthyo', measurement_type=
-# 'abundance'. taxon_id (VARCHAR) maps 1:1 to species.species_id. std_tally
+# 'abundance'. obs.taxon_key joins the legacy `species` shim (carries taxon_key).
+# std_tally
 # reconstructs the standardized haul tally = abundance * std_haul_factor /
 # prop_sorted, both pulled from sample_measurement (one row per net sample_key).
 # hex_id (H3 res-10) is carried through; coarser resolutions are derived at
@@ -98,7 +135,7 @@ dbExecute(
     o.hex_id
   FROM obs o
   JOIN species sp
-    ON TRY_CAST(o.taxon_id AS INTEGER) = sp.species_id
+    ON sp.taxon_key = o.taxon_key
   -- WoRMS parent taxon id, needed by taxa_tree_builder's (worms_id, parent_id) grouping
   LEFT JOIN taxon tx
     ON sp.worms_id = tx.taxonID AND tx.authority = 'WoRMS'
