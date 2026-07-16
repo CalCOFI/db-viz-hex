@@ -111,7 +111,7 @@ source(here("app/logging.R"))   # query logging -> Google Sheet (CALCOFI_LOG_URL
 Sys.setenv(
   H3T_USE      = TRUE,
   H3T_BASE_URL = "https://h3t.calcofi.io/h3t",
-  H3T_RELEASE  = "v2026.07.15")
+  H3T_RELEASE  = "v2026.07.16")
 
 # h3t feature flag — when TRUE, the app skips the 10-resolution sf preload and
 # reads hex data on-demand from the h3t tile API (see api-h3t/). default off.
