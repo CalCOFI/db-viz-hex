@@ -30,12 +30,14 @@ hex_geo <- here("data/hex.geojson")
 # minimal set of source tables needed to build the app database:
 #   obs                — consolidated observations (realm bio|env); carries
 #                        hex_id (H3 res-10) and is partitioned by dataset_key
-#   sample_measurement — std_haul_factor + prop_sorted for bio std_tally
+#   sample_measurement — std_haul_factor + prop_sorted + volume_sampled for CPUE
+#   sample             — event dimension; carries tow_type (net gear) for
+#                        net-type-aware CPUE (release >= v2026.07.17)
 #   taxon/dataset_taxon — unified taxon reference + per-dataset crosswalk; the
 #                        app's picker + taxa-tree queries want the legacy
 #                        `species` + WoRMS-hierarchy `taxon` shapes, so we derive
 #                        those (+ `taxa_rank`) locally from these below.
-keep_tables <- c("obs", "sample_measurement", "taxon", "dataset_taxon")
+keep_tables <- c("obs", "sample_measurement", "sample", "taxon", "dataset_taxon")
 
 cat("fetching catalog for version:", db_version, "\n")
 info       <- cc_db_info(version = db_version)
@@ -104,21 +106,6 @@ dbExecute(con, "
   SELECT DISTINCT rank AS taxonRank, rank_order
   FROM taxon_u WHERE rank IS NOT NULL")
 
-# step A3: net gear (tow type) per ichthyo net sample_key ----
-# The released core model doesn't carry net gear, but CPUE standardization is
-# net-type-specific (manta surface tows -> counts/100 m^3; oblique/vertical tows
-# -> counts/10 m^2). Recover gear from the ichthyo ingest source parquet
-# (net.parquet -> tow.parquet on public GCS); obs.sample_key for ichthyo is
-# 'swfsc_ichthyo:net:<net_uuid>', so map net_uuid -> tow_uuid -> tow_type_key.
-dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
-dbExecute(con, "
-  CREATE OR REPLACE TABLE net_tow AS
-  SELECT 'swfsc_ichthyo:net:' || CAST(n.net_uuid AS VARCHAR) AS sample_key,
-         t.tow_type_key AS tow_type
-  FROM read_parquet('gs://calcofi-db/ingest/swfsc_ichthyo/net.parquet') n
-  JOIN read_parquet('gs://calcofi-db/ingest/swfsc_ichthyo/tow.parquet') t
-    USING (tow_uuid)")
-
 # step B: bio_obs materialized table ----
 # ichthyo (larvae/eggs + folded inverts) observations from the consolidated
 # `obs` table: realm='bio', dataset_key='swfsc_ichthyo', measurement_type=
@@ -148,18 +135,18 @@ dbExecute(
     sp.worms_id,
     tx.parentNameUsageID AS parent_id,
     o.measurement_value AS tally,
-    nt.tow_type,
+    smp.tow_type,
     shf.measurement_value AS std_haul_factor,
     ps.measurement_value  AS prop_sorted,
     vol.measurement_value AS volume_sampled,
     CASE
-      WHEN nt.tow_type = 'MT'
+      WHEN smp.tow_type = 'MT'
         THEN o.measurement_value / NULLIF(ps.measurement_value, 0)
                / NULLIF(vol.measurement_value, 0) * 100
       ELSE o.measurement_value * shf.measurement_value
                / NULLIF(ps.measurement_value, 0)
     END                 AS std_tally,
-    CASE WHEN nt.tow_type = 'MT' THEN 'count/100m3' ELSE 'count/10m2' END AS cpue_unit,
+    CASE WHEN smp.tow_type = 'MT' THEN 'count/100m3' ELSE 'count/10m2' END AS cpue_unit,
     o.datetime          AS time_start,
     o.longitude,
     o.latitude,
@@ -177,8 +164,10 @@ dbExecute(
     ON o.sample_key = ps.sample_key  AND ps.measurement_type = 'prop_sorted'
   LEFT JOIN sample_measurement vol
     ON o.sample_key = vol.sample_key AND vol.measurement_type = 'volume_sampled'
-  LEFT JOIN net_tow nt
-    ON o.sample_key = nt.sample_key
+  -- net gear (tow_type) now carried on the core sample table (calcofi4db >= 2.10.0);
+  -- obs.sample_key is the net sample_key, which sample denormalizes tow_type onto.
+  LEFT JOIN sample smp
+    ON o.sample_key = smp.sample_key
   WHERE o.realm            = 'bio'
     AND o.dataset_key      = 'swfsc_ichthyo'
     AND o.measurement_type = 'abundance'
