@@ -114,7 +114,10 @@ get_taxon_parentage <- function(taxonID, con, authority = "WoRMS"){
 #'   \itemize{
 #'     \item \code{name} - species name (common + scientific)
 #'     \item \code{tally} - raw larval count
-#'     \item \code{std_tally} - standardized tally (adjusted for haul factor and sorting proportion)
+#'     \item \code{tow_type} - net gear code (C1/CB/CV/PV oblique/vertical; MT manta)
+#'     \item \code{std_haul_factor}, \code{prop_sorted}, \code{volume_sampled} - tow effort
+#'     \item \code{std_tally} - CPUE (density); net-type-aware, see details
+#'     \item \code{cpue_unit} - \code{count/10m2} (oblique/vertical) or \code{count/100m3} (manta)
 #'     \item \code{time_start} - tow start datetime
 #'     \item \code{longitude}, \code{latitude} - spatial coordinates
 #'     \item \code{quarter} - quarter (1-4)
@@ -123,8 +126,12 @@ get_taxon_parentage <- function(taxonID, con, authority = "WoRMS"){
 #'   }
 #'
 #' @details
-#' The standardized tally accounts for differences in haul efficiency and
-#' subsampling: \code{std_tally = std_haul_factor * tally / prop_sorted}.
+#' \code{std_tally} is CPUE (catch per unit effort / density), standardized by
+#' net type (materialized in \code{prep_db.R::bio_obs}): oblique & vertical tows
+#' (C1, CB, CV, PV) give counts per 10 m^2 via
+#' \code{tally * std_haul_factor / prop_sorted}; manta surface tows (MT) give
+#' counts per 100 m^3 via \code{tally / prop_sorted / volume_sampled * 100}
+#' (the manta haul factor does not standardize to volume).
 #' Only records with non-NA tally values are returned.
 #'
 #' @examples
@@ -361,7 +368,7 @@ prep_sp_hex <- function(df_sp, res_range) {
       !is.na(sp.value)) |>
     mutate(
       hex_id  = sql("HEX(hex_int)"),
-      tooltip = paste0("Avg. Abundance: ", round(sp.value, 2),
+      tooltip = paste0("Avg. CPUE (density): ", round(sp.value, 2),
                  "</br>Num. Samples: ", n,
                  "</br>Date Range: ", min_dtime, " to ", max_dtime)) |>
     select(resolution, hexid = hex_id, sp.value, n, min_dtime, max_dtime, tooltip) |>
@@ -885,8 +892,13 @@ prep_summary_stats <- function(df_sp, df_env) {
 }
 
 taxa_tree_builder <- function(df_sp) {
-  # get taxa names
-  names <- unique(df_sp |> pull(name))
+  # observed taxa: match by worms_id, NOT the display-name string. get_sp() builds
+  # df_sp$name as "common (scientific)" while the species/taxon join below builds
+  # it as "common (rank: scientific)" — since the unified-taxon reprep populated
+  # taxonRank, those two formats diverge and a name-based filter silently returns
+  # zero rows (then the downstream select on acceptedNameUsageID errors). worms_id
+  # is the stable key both sides already carry.
+  sel_worms <- unique(df_sp |> pull(worms_id))
 
   # get counts by taxa in data
   df_counts <- df_sp |>
@@ -897,22 +909,8 @@ taxa_tree_builder <- function(df_sp) {
 
   # build data.tree of taxa
   tree_counts <- tbl(con, "species") |>
-    left_join(
-      tbl(con, "taxon") |>
-        filter(authority == "WoRMS"),
-      by = join_by(worms_id == taxonID)) |>
-    mutate(
-      rank_part = ifelse(
-        is.na(taxonRank) | taxonRank == "",
-        "",
-        paste0(tolower(taxonRank), ": ")),
-      name_part = ifelse(
-        is.na(common_name) | common_name == "",
-        "",
-        paste0(common_name, " ")),
-      name = paste0(name_part, "(", rank_part, scientific_name, ")")) |>
-    filter(name %in% names) |>
-    select(name, worms_id) |>
+    filter(worms_id %in% sel_worms) |>
+    select(worms_id) |>
     collect() |>
     # get children of user-selected taxa
     mutate(

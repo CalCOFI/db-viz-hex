@@ -470,7 +470,7 @@ server <- function(input, output, session) {
           "<b>Date:</b> ", sp_dtime,
           "<br><b>Species:</b> ", sp_name,
           "<br><b>", rx$lbl_env_var, ":</b> ", round(env_qty, 2),
-          "<br><b>Abundance:</b> ", round(sp_tally, 2) ))
+          "<br><b>CPUE (density):</b> ", round(sp_tally, 2) ))
 
     # create ggplot (thematic will apply bslib theme automatically)
     p <- ggplot(
@@ -805,7 +805,7 @@ server <- function(input, output, session) {
             "<b>Date:</b> ", clicked_point$sp_dtime,
             "<br><b>Species:</b> ", clicked_point$sp_name,
             "<br><b>", rx$lbl_env_var, ":</b> ", round(clicked_point$env_qty, 2),
-            "<b>Abundance:</b> ", round(clicked_point$sp_tally, 2)
+            "<b>CPUE (density):</b> ", round(clicked_point$sp_tally, 2)
           )
         )
     })
@@ -840,7 +840,7 @@ server <- function(input, output, session) {
             "<b>Date:</b> ", selected_points$sp_dtime,
             "<br><b>Species:</b> ", selected_points$sp_name,
             "<br><b>", rx$lbl_env_var, ":</b> ", round(selected_points$env_qty, 2),
-            "<br><b>Abundance:</b> ", round(selected_points$sp_tally, 2)
+            "<br><b>CPUE (density):</b> ", round(selected_points$sp_tally, 2)
           )
         )
     })
@@ -915,7 +915,7 @@ server <- function(input, output, session) {
       mutate(
         tooltip = paste0(
           "Species: ", name, "<br>",
-          "Tally: ", std_tally, "<br>",
+          "CPUE: ", round(std_tally, 2), "<br>",
           "Distance: ", round(distance, 2), " km<br>",
           "Date: ", time_start)
       ) |>
@@ -1108,7 +1108,15 @@ server <- function(input, output, session) {
 
         if (i == "raw_sp") {
           req(rx$df_sp)
-          write_data(rx$df_sp |> collect(), "data/original/species.csv")
+          # CPUE-forward schema (E. Weber request): expose the raw tally, the
+          # effort fields it standardizes by, and the reconstructed density +
+          # unit (count/10m2 for oblique/vertical tows, count/100m3 for manta).
+          sp_out <- rx$df_sp |>
+            collect() |>
+            rename(cpue = std_tally) |>
+            relocate(tow_type, tally, std_haul_factor, prop_sorted,
+                     volume_sampled, cpue, cpue_unit, .after = quarter)
+          write_data(sp_out, "data/original/species.csv")
 
         } else if (i == "raw_env") {
           req(rx$df_env)
@@ -1246,6 +1254,14 @@ server <- function(input, output, session) {
         "## Bundle layout",
         "",
         "- `data/original/` — raw species + environmental observations",
+        paste(
+          "  Species rows carry the raw `tally` (count), the tow effort it is",
+          "standardized by (`tow_type`, `std_haul_factor`, `prop_sorted`,",
+          "`volume_sampled`), and the resulting `cpue` (catch per unit effort /",
+          "density) with its `cpue_unit`: **count/10m²** for oblique & vertical",
+          "tows (C1, CB, CV, PV; cpue = tally × std_haul_factor / prop_sorted) and",
+          "**count/100m³** for manta surface tows (MT; cpue = tally / prop_sorted /",
+          "volume_sampled × 100)."),
         "- `data/summarized/` — aggregated map / time-series / scatterplot / depth-profile data",
         "- `data/integrated/` — species matched to environment in time + space",
         "- `query/` — the **exact, portable SQL** behind each file, plus",
