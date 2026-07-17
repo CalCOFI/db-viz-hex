@@ -403,7 +403,10 @@ server <- function(input, output, session) {
     # Species legend (left / before)
     maplibre_compare_proxy("map", map_side = "before") |>
       add_legend(
-        legend_title = "Avg. Abundance (count / 10 m2)",
+        # CPUE (density): count/10m² for oblique/vertical tows, count/100m³ for
+        # manta — the map value averages across net types, so the legend names
+        # the measure without a single unit (per-tow unit is in the download).
+        legend_title = "Avg. CPUE (density)",
         values       = round(sp_scale$breaks, 2),
         colors       = sp_scale$colors,
         type         = "continuous",
