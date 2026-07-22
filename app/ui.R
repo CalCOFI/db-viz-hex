@@ -109,6 +109,26 @@ ui <- page_sidebar(
       color: #1a1a1a !important;
       font-weight: 500;
     }
+
+    /* --- small-screen / phone fixes ---------------------------------- */
+    /* paired with sidebar(open='desktop'): the sidebar now collapses behind
+       a toggle on phones instead of stacking above the map. as a belt-and-
+       suspenders guard, guarantee the map keeps a usable height even if the
+       bslib fillable height chain under-resolves on a mobile browser (the
+       map wrapper relies on height:100% inside a flex column). */
+
+    /* hint to OPEN the sidebar: hidden everywhere by default, shown only
+       while the sidebar is collapsed on a phone (its mirror — the 'collapse
+       to view the map' note — lives inside the sidebar via d-sm-none). */
+    .mobile-open-hint { display: none; align-items: center; gap: 0.5rem; }
+
+    @media (max-width: 575.98px) {
+      #map { min-height: 70vh; }
+      #map .maplibregl-map,
+      #map .mapboxgl-map { min-height: 70vh; }
+
+      .bslib-sidebar-layout.sidebar-collapsed .mobile-open-hint { display: flex; }
+    }
     ")) ),
 
   useConductor(),
@@ -117,6 +137,21 @@ ui <- page_sidebar(
   # sidebar ----
   sidebar = sidebar(
     width = 300,
+    # open = "desktop": sidebar open on desktop, but COLLAPSIBLE behind a
+    # toggle on phones. the bslib default resolves to open-mobile="always",
+    # which forces a stacked "flow" layout that (a) hides the sidebar toggle
+    # and (b) pushes the map below the filters, collapsing it to a sliver.
+    open  = "desktop",
+
+    # mobile-only hint: on phones the sidebar opens as a full-screen overlay,
+    # so tell users how to collapse it back to the map. hidden on desktop
+    # (>= 576px) via Bootstrap's d-sm-none; only shows while the panel is open.
+    div(
+      class = "d-sm-none alert alert-info d-flex align-items-center gap-2 py-2 px-2 mb-2 small",
+      role  = "note",
+      bs_icon("arrow-up-left"),
+      span("Collapse this panel with the ", tags$strong("toggle at the top-left"),
+           " to view the map.") ),
 
     conditionalPanel(
       "input.outputPanel === 'Map'",
@@ -192,6 +227,17 @@ ui <- page_sidebar(
                         selected = "nearest_time"))))) ),
 
   # main content ----
+  # mobile-only hint: when the sidebar is collapsed on a phone (the default),
+  # the filters/layers are hidden, so point users to the toggle. lives in the
+  # main area (the sidebar content is hidden while collapsed) and is shown only
+  # for .sidebar-collapsed on small screens — see the media query in tags$head.
+  div(
+    class = "mobile-open-hint alert alert-info py-2 px-2 mb-2 small",
+    role  = "note",
+    bs_icon("arrow-up-left"),
+    span("Tap the ", tags$strong("toggle at the top-left"),
+         " to open Filters & Layers.") ),
+
   navset_card_underline(
     id = "outputPanel",
     height = "100%",

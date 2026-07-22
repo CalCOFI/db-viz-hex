@@ -211,12 +211,17 @@ zoom_breaks[length(zoom_breaks)] <- 22
 # tour ----
 tour <- Conductor$new(
   exitOnEsc = T,
-  keyboardNavigation = T
+  keyboardNavigation = T,
+  # show an "X" close icon on every step so the welcome/tour can be dismissed
+  # without a keyboard (esc is unavailable on phones)
+  defaultStepOptions = list(
+    cancelIcon = list(enabled = TRUE, label = "Close")
+  )
 )$step(
   title = "Welcome",
   text = "The app is initializing with a map comparing Pacific sardine larvae
     and temperature collected on CalCOFI cruises since 1949.<br><br>
-    (To exit tour, use keyboard esc button)",
+    (To exit the tour, tap the &times; or press esc)",
   buttons = list(
     list(
       action = "next",
