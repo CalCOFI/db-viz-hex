@@ -33,3 +33,22 @@ This app was developed by:
 - [Ivy Li](https://www.linkedin.com/in/ivy-li-268ab330a/): CalCOFI intern from UCSB (BS in Physics and Statistics & Data Science)
 - [Ben Best](https://ecoquants.com/about/#ben-best-phd): CalCOFI contractor, marine data scientist at EcoQuants LLC
 - [Erin Satterthwaite](https://calcofi.org/about/staff/erin-satterthwaite/): CalCOFI Program Coordinator 
+
+## Deploy
+
+The app runs on the CalCOFI **`shiny-server`** VM: this repo is cloned to
+`/share/github/CalCOFI/db-viz-hex` and served (via `shiny-server` in the `rstudio`
+container) from `/srv/shiny-server/db-viz-hex`, a symlink to its `app/` directory —
+so `https://app.calcofi.io/db-viz-hex` serves `app/`.
+
+After pushing UI/server R-code changes to `main`, pull and reload just this app:
+
+```bash
+ssh calcofi                                              # → ssh.calcofi.io (key-based)
+git -C /share/github/CalCOFI/db-viz-hex pull --ff-only
+touch /share/github/CalCOFI/db-viz-hex/app/restart.txt   # reloads on next request
+```
+
+When the release / DB schema changes, also rebuild the local DuckDB before restarting
+(`docker exec -d rstudio bash -lc 'cd /share/github/CalCOFI/db-viz-hex && Rscript prep_db.R'`).
+See [`CLAUDE.md`](CLAUDE.md#deploy-to-production-appcalcofiiodb-viz-hex) for details.

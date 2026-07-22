@@ -163,6 +163,35 @@ db-viz-hex/
 - **Resource limits**: Monitor memory usage; implement pagination for large datasets
 - **Error handling**: Use `tryCatch()` and `safely()` from `purrr` to gracefully handle failures
 
+### Deploy to production (`app.calcofi.io/db-viz-hex`)
+
+The live app is served by `shiny-server` (inside the `rstudio` Docker container) on
+the CalCOFI **`shiny-server`** VM. The repo is cloned on the host at
+`/share/github/CalCOFI/db-viz-hex`, and `/srv/shiny-server/db-viz-hex` symlinks to
+its `app/` directory — so the URL path (`db-viz-hex`) maps to `app/`. `shiny-server`
+starts a fresh R process when an app's `restart.txt` mtime changes.
+
+**UI / server R-code changes** (like `app/ui.R`, `app/server.R`, `app/global.R`) —
+no DB or package changes — deploy with just a pull + restart:
+
+```bash
+# after pushing to main:
+ssh calcofi                                              # → ssh.calcofi.io (key-based)
+git -C /share/github/CalCOFI/db-viz-hex pull --ff-only
+touch /share/github/CalCOFI/db-viz-hex/app/restart.txt   # reloads only this app
+```
+
+**When the release / DB schema changes**, also rebuild the app's local DuckDB in the
+`rstudio` container before restarting (heavy — background it with `docker exec -d`):
+
+```bash
+docker exec -d rstudio bash -lc 'cd /share/github/CalCOFI/db-viz-hex && Rscript prep_db.R'
+```
+
+Rebuild the `rstudio` image (in [`CalCOFI/server`](https://github.com/CalCOFI/server))
+only when system or R **package** dependencies change. Full cross-repo deploy notes
+live in `CalCOFI/workflows/CLAUDE.md` (§ Deploy) and `CalCOFI/apps/README.md`.
+
 ## Resources
 
 - [Mastering Shiny](https://mastering-shiny.org/) by Hadley Wickham
