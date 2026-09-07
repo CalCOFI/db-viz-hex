@@ -817,6 +817,35 @@ prep_env_poly <- function(df_env, sel_layer, env_stat) {
 }
 
 
+#' Lazy Table of Sample Keys Within Selected Spatial-Layer Polygons
+#'
+#' The FILTER counterpart to \code{\link{prep_sp_poly}}/\code{\link{prep_env_poly}}'s
+#' \code{sample_spatial} join (which those two use to AGGREGATE) -- factored
+#' out so the Data Selection modal's Spatial tab can use the same mechanism to
+#' keep only matching samples. Used for any \code{spatial_layers.csv} layer not
+#' already covered by a \code{calcofi4r::cc_places} category with real polygon
+#' geometry (see \code{global.R::sample_spatial_layers}) -- those layers have
+#' no polygon loaded to run \code{ST_Within()} against, but \code{sample_spatial}
+#' already has each sample's membership pre-computed.
+#'
+#' @param sel_layer Character name of the spatial layer (\code{d_spatial_layers$layer})
+#' @param sel_names Character vector of \code{spatial_name} values to keep
+#'
+#' @return lazy \code{tbl(con, "sample_spatial")}, filtered down to distinct \code{sample_key}
+#'
+#' @seealso \code{\link{prep_sp_poly}}, \code{\link{prep_env_poly}}
+#'
+#' @importFrom dplyr tbl filter select distinct
+#'
+#' @export
+sample_spatial_keys <- function(sel_layer, sel_names) {
+  tbl(con, "sample_spatial") |>
+    filter(layer == !!sel_layer, spatial_name %in% !!sel_names) |>
+    select(sample_key) |>
+    distinct()
+}
+
+
 #' Read a Spatial Layer's Polygon Geometry
 #'
 #' Reads the boundary geometry for one layer out of the app's local DuckDB
@@ -894,7 +923,7 @@ cache_key <- function(db_path) {
     env_var    = "temperature",
     quarters   = 1:4,
     date_range = as.character(min_max_date),
-    depth      = c(0, 212),
+    depth      = c(0, 515),
     children   = TRUE,
     env_stat   = "mean",
     res_range  = res_range)
@@ -1221,90 +1250,161 @@ prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
 #'   drawn_polygon   = NULL
 #' )
 #'
-#' @seealso \code{\link{modal_data}} for the modal dialog that captures these filters
+#' @seealso \code{\link{modal_edit_filters}}, \code{\link{top_bar_taxa_ui}}, \code{\link{top_bar_env_ui}} for the controls that capture these filters
 #'
 #' @export
 prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
                                 sel_depth_range, drawn_polygon, selected_grid_zones,
                                 ck_children, bio_datasets = NULL) {
-  filter_list <- list()
+  # The full picture of what's selected -- every row, every time.
+  # `Label: **value**` -- value bold, label muted (ui.R #filter_summary CSS).
+  out <- list()
 
-  # Which datasets the numbers came from. The app reads all 9 bio and 5 env
-  # datasets, and nothing on screen used to say so — a CPUE could be ichthyo
-  # net tows, CUFES egg-pump counts, or both, with no way to tell.
-  n_bio_all <- nrow(d_bio_datasets)
-  if (is.null(bio_datasets) || length(bio_datasets) == 0 ||
-      length(bio_datasets) == n_bio_all) {
-    bio_txt <- paste0("all ", n_bio_all)
+  # Taxa
+  taxa_val <- if (is.null(sel_name) || length(sel_name) == 0) "none"
+              else if (length(sel_name) == 1) sel_name[1]
+              else paste0(length(sel_name), " taxa selected")
+  out <- c(out, paste0("Taxa: **", taxa_val, "**"))
+
+  # Environmental variable -- "<label> — <dataset>", matching the top-bar card
+  var_val <- if (is.null(sel_env_var) || !nzchar(sel_env_var)) {
+    "none"
   } else {
-    bio_txt <- paste(dataset_label(bio_datasets), collapse = ", ")
+    i <- match(sel_env_var, d_env_vars$measurement_type)
+    if (is.na(i)) sel_env_var
+    else paste0(d_env_vars$label[i], " — ", dataset_label(d_env_vars$dataset_key[i]))
   }
-  filter_list <- c(filter_list, paste0("**Taxa datasets:** ", bio_txt))
+  out <- c(out, paste0("Variable: **", var_val, "**"))
 
-  # species
-  if (!is.null(sel_name) && length(sel_name) > 0) {
-    filter_list <- c(filter_list,
-                     if (length(sel_name) <= 10) {
-                       paste0("**Taxa:** ", paste(sel_name, collapse = ", "))
-                     } else {
-                       paste0("**Taxa:** ", length(sel_name), " selected")
-                     }
-    )
-  }
+  # Quarters -- always spelled out
+  qn <- c("1" = "Q1", "2" = "Q2", "3" = "Q3", "4" = "Q4")
+  q_val <- if (length(sel_qtr) == 0) "none"
+           else paste(qn[as.character(sort(as.integer(sel_qtr)))], collapse = ", ")
+  out <- c(out, paste0("Quarters: **", q_val, "**"))
 
-  # variable
-  env_ds <- d_env_vars$dataset_key[match(sel_env_var, d_env_vars$measurement_type)]
-  filter_list <- c(filter_list, paste0(
-    "**Variable:** ", env_var_label(sel_env_var),
-    if (!is.na(env_ds)) paste0(" \u2014 ", dataset_label(env_ds)) else ""))
+  # Date range -- exact window
+  out <- c(out, paste0(
+    "Date Range: **", format(as.Date(sel_date_range[1]), "%Y-%m-%d"),
+    " to ", format(as.Date(sel_date_range[2]), "%Y-%m-%d"), "**"))
 
-  # quarters
-  quarter_names <- c("1" = "Q1", "2" = "Q2", "3" = "Q3", "4" = "Q4")
-  filter_list <- c(filter_list, paste0("**Quarters:** ", paste(quarter_names[as.character(sel_qtr)], collapse = ", ")))
+  # Depth range (environmental layers only -- get_sp() has no depth filter)
+  out <- c(out, paste0(
+    "Depth Range: **", sel_depth_range[1], " - ", sel_depth_range[2], " m**"))
 
-  # date range
-  filter_list <- c(filter_list, paste0("**Date Range:** ",
-                                       format(sel_date_range[1], "%Y-%m-%d"), " to ",
-                                       format(sel_date_range[2], "%Y-%m-%d")))
+  # Spatial
+  spatial_val <- if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) "drawn polygon"
+    else if (!is.null(selected_grid_zones) && length(selected_grid_zones) > 0)
+      (if (length(selected_grid_zones) <= 3) paste(selected_grid_zones, collapse = ", ")
+       else paste(length(selected_grid_zones), "regions selected"))
+    else "All locations"
+  out <- c(out, paste0("Spatial: **", spatial_val, "**"))
 
-  # depth range
-  filter_list <- c(filter_list, paste0("**Depth Range:** ", sel_depth_range[1], " - ", sel_depth_range[2], " m"))
+  # Include children
+  out <- c(out, paste0("Include Children: **", ifelse(ck_children, "Yes", "No"), "**"))
 
-  # spatial
-  if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) {
-    filter_list <- c(filter_list, "**Spatial:** Custom polygon defined")
-  } else if (!is.null(selected_grid_zones) && length(selected_grid_zones) > 0) {
-    zone_text <- if (length(selected_grid_zones) <= 5) {
-      paste(selected_grid_zones, collapse = ", ")
-    } else {
-      paste(length(selected_grid_zones), "zones selected")
-    }
-    filter_list <- c(filter_list, paste0("**Spatial:** Grid zones - ", zone_text))
-  } else {
-    filter_list <- c(filter_list, "**Spatial:** All locations")
-  }
-
-  # taxonomic children
-  filter_list <- c(filter_list, paste0("**Include Children:** ", ifelse(ck_children, "Yes", "no")))
-
-  return(filter_list)
+  out
 }
 
-prep_summary_stats <- function(df_sp, df_env) {
+#' Summary-statistics cards for the Map panel's "Summary Statistics" section.
+#'
+#' One SQL summarize per side (everything computed IN the database -- the old
+#' version did nrow(collect()), materializing millions of rows for two
+#' integers). Returns a data.frame of `value` (pre-formatted) + `label`, which
+#' \code{output$summary_statistics} renders as a card grid.
+#'
+#' @param df_sp,df_env dbplyr lazy tables from \code{get_sp()}/\code{get_env()}
+#' @param env_label short label for the environmental variable (e.g. "Water temp")
+#' @return data.frame(label, sp, env, is_head) -- a matched Species/Environment
+#'   matrix. Row 1 (`is_head = TRUE`) is the identity of each side (taxon name /
+#'   variable); the rest are matched metrics, "—" where a side has no equivalent.
+prep_summary_stats <- function(df_sp, df_env, env_label = "Env. value") {
+  sp_agg <- df_sp |>
+    summarize(
+      n_obs    = n(),
+      n_taxa   = n_distinct(taxon_key),
+      sci      = min(scientific_name, na.rm = TRUE),
+      mean_ab  = mean(std_tally, na.rm = TRUE),
+      p02_ab   = sql("quantile_cont(std_tally, 0.02)"),
+      p98_ab   = sql("quantile_cont(std_tally, 0.98)"),
+      date_min = min(time_start, na.rm = TRUE),
+      date_max = max(time_start, na.rm = TRUE)) |>
+    collect()
+  env_agg <- df_env |>
+    summarize(
+      n_obs    = n(),
+      mean_v   = mean(qty, na.rm = TRUE),
+      # 2nd/98th percentile -- the raw min/max exposes 99-type missing-value
+      # sentinels; this matches the range the map legend actually spans
+      p02_v    = sql("quantile_cont(qty, 0.02)"),
+      p98_v    = sql("quantile_cont(qty, 0.98)"),
+      d_min    = min(depth_m, na.rm = TRUE),
+      d_max    = max(depth_m, na.rm = TRUE),
+      date_min = min(dtime,   na.rm = TRUE),
+      date_max = max(dtime,   na.rm = TRUE)) |>
+    collect()
 
-  # Count IN the database. This was `nrow(df |> collect())` on both tables,
-  # which pulled every selected row into R to look at nrow() and throw it away
-  # — 639K rows and ~0.4 s for the default selection, on the startup path, and
-  # it grows with the filter: a broad environmental variable over the full date
-  # range is millions of rows materialized for two integers nobody sees.
-  n_sp  <- df_sp  |> summarize(n = n()) |> pull(n)
-  n_env <- df_env |> summarize(n = n()) |> pull(n)
+  fmt_n <- function(x) {
+    x <- as.numeric(x)
+    if (!is.finite(x)) return("—")
+    format(round(x), big.mark = ",", scientific = FALSE, trim = TRUE)
+  }
+  fmt_v <- function(x) {
+    x <- as.numeric(x)
+    if (!is.finite(x)) return("—")
+    a <- abs(x)
+    if (a >= 1000) format(round(x), big.mark = ",", scientific = FALSE, trim = TRUE)
+    else if (x == round(x)) format(round(x), big.mark = ",", trim = TRUE)
+    else if (a >= 10) sprintf("%.1f", x)
+    else sprintf("%.2f", x)
+  }
+  fmt_rng <- function(a, b) {
+    a <- as.numeric(a); b <- as.numeric(b)
+    if (!is.finite(a) || !is.finite(b)) return("—")
+    paste0(fmt_v(a), "–", fmt_v(b))
+  }
+  fmt_span <- function(a, b) {
+    y <- suppressWarnings(c(as.integer(format(as.Date(a), "%Y")),
+                            as.integer(format(as.Date(b), "%Y"))))
+    if (anyNA(y)) return("—")
+    if (y[1] == y[2]) as.character(y[1]) else paste0(y[1], "–", y[2])
+  }
+  fmt_depth <- function(a, b) {
+    a <- as.numeric(a); b <- as.numeric(b)
+    if (!is.finite(a) || !is.finite(b)) return("—")
+    sprintf("%.0f–%.0f m", a, b)
+  }
 
-  list(
-    "**Species Data**",
-    paste0(format(n_sp, big.mark = ","), " observations"),
-    "\n**Environmental Data**",
-    paste0(format(n_env, big.mark = ","), " observations"))
+  # short variable name for the header ("temp", "oxygen", ...)
+  el <- tolower(sub("\\s*\\(.*$", "", env_label))
+  env_what <- if (grepl("temperature", el)) "Temperature"
+    else if (grepl("oxygen", el)) "Oxygen"
+    else if (grepl("salinit", el)) "Salinity"
+    else if (grepl("chlorophyll", el)) "Chlorophyll-a"
+    else tools::toTitleCase(el)
+
+  sp_what <- if (isTRUE(sp_agg$n_taxa > 1)) paste0(sp_agg$n_taxa, " taxa")
+             else if (is.na(sp_agg$sci) || !nzchar(sp_agg$sci)) "—"
+             # abbreviate the genus in a binomial so it fits the narrow column
+             else sub("^([A-Za-z])[a-z]+ ", "\\1. ", sp_agg$sci)
+
+  data.frame(
+    label = c("", "Obs.", "Years", "Mean", "Typ.", "Depth"),
+    sp = c(
+      sp_what,
+      fmt_n(sp_agg$n_obs),
+      fmt_span(sp_agg$date_min, sp_agg$date_max),
+      fmt_v(sp_agg$mean_ab),
+      fmt_rng(sp_agg$p02_ab, sp_agg$p98_ab),
+      "—"),
+    env = c(
+      env_what,
+      fmt_n(env_agg$n_obs),
+      fmt_span(env_agg$date_min, env_agg$date_max),
+      fmt_v(env_agg$mean_v),
+      fmt_rng(env_agg$p02_v, env_agg$p98_v),
+      fmt_depth(env_agg$d_min, env_agg$d_max)),
+    is_head = c(TRUE, rep(FALSE, 5)),
+    stringsAsFactors = FALSE)
 }
 
 taxa_tree_builder <- function(df_sp) {
@@ -1595,7 +1695,8 @@ map_sp <- function(sp_hex_list, sp_scale_list, is_dark = T) {
     add_scale_control(position = "top-left", unit = "metric") |>
     add_navigation_control()
 
-  # add spatial boundary layers first (below hexagons)
+  # boundary layers first, BELOW the hexes -- above them they intercept the
+  # hex hover/tooltip
   vis_ids <- d_spatial_layers |> filter(default_visible) |> pull(dataset_id)
   sp_map  <- sp_map |>
     add_spatial_layers(d_spatial_layers, visible_ids = vis_ids, is_dark = is_dark)
@@ -1678,7 +1779,7 @@ map_env <- function(env_hex_list, env_scale_list, env_stat_label, env_var_label,
     add_scale_control(position = "top-left", unit = "metric") |>
     add_navigation_control()
 
-  # add spatial boundary layers first (below hexagons)
+  # boundary layers first, BELOW the hexes (see map_sp)
   vis_ids <- d_spatial_layers |> filter(default_visible) |> pull(dataset_id)
   env_map <- env_map |>
     add_spatial_layers(d_spatial_layers, visible_ids = vis_ids, is_dark = is_dark)
@@ -1906,207 +2007,876 @@ bio_ds_label <- function(selected, n_all = nrow(d_bio_datasets)) {
   else                      sprintf("%d of %d datasets", n, n_all)
 }
 
+#' Datasets Tree for the Filters Panel
+#'
+#' The Filters panel's "Datasets" section (per the approved mockup) --
+#' \code{sel_bio_ds} grouped into 4 everyday categories (Fish / Crustaceans /
+#' Plankton / Birds & Mammals; see \code{global.R::BIO_DATASET_CATEGORY})
+#' instead of one flat list.
+#'
+#' \code{sel_bio_ds} itself is rendered ONCE, unchanged (same id, same
+#' choices/selected as always) -- the grouping is a pure client-side
+#' re-parenting of its checkbox \code{<div>}s into category wrappers, done by
+#' the script in ui.R (search for \code{cc_ds_tree}). That script only ever
+#' moves nodes to a deeper spot INSIDE \code{#sel_bio_ds}'s own subtree, never
+#' out of it, so Shiny's \code{$(el).find('input:checked')} value collection
+#' (which searches the whole subtree regardless of nesting) still sees every
+#' checkbox -- the reactive value is exactly what it always was, only its
+#' visual arrangement changed. The category-level "select all in this group"
+#' checkboxes are pure UI sugar with no Shiny id of their own; they just
+#' check/uncheck their real children and dispatch a \code{change} event,
+#' mirroring the "Select all" button the old Datasets popover already used.
+#'
+#' This card lives inside \code{modal_edit_filters()}, which only exists in
+#' the DOM once \code{showModal()} puts it there -- so, unlike the old
+#' always-on-page popover, \code{input$sel_bio_ds} is \code{NULL} until a user
+#' opens "Edit filters" for the first time. That is safe: every reader of it
+#' (\code{sp_choices()}, \code{sp_names_for()}, \code{get_sp()},
+#' \code{build_sp_sql()}/\code{build_env_sql()}) already treats
+#' \code{datasets = NULL} as "no dataset filter", which is exactly the
+#' all-datasets default \code{selected = d_bio_datasets$dataset_key} would
+#' have produced anyway -- verified by reading every call site before making
+#' this change, not assumed.
+#'
+#' @return a \code{tagList} for the Filters panel's "Datasets" section
+#'
+#' @importFrom shiny checkboxGroupInput
+#' @importFrom jsonlite toJSON
+#'
+#' @export
+dataset_category_tree_ui <- function() {
+  cat_order <- c("Fish", "Crustaceans", "Plankton", "Birds & Mammals")
+  cats      <- c(intersect(cat_order, unique(d_bio_datasets$category)),
+                 setdiff(unique(d_bio_datasets$category), cat_order))
 
-#' Data Selection Modal Dialog
+  cat_map <- setNames(as.list(d_bio_datasets$category), d_bio_datasets$dataset_key)
+
+  # small inline SVG glyph per category, matching the FilterSummary mockup's
+  # rounded icon tiles. Kept as single-quoted R strings (so the embedded `"`
+  # attribute quotes need no escaping) and handed to the tree-builder JS in
+  # ui.R via a data attribute -- htmltools escapes it into the attribute, and
+  # the JS assigns it with innerHTML, so no R-string-literal quote-eating risk.
+  cat_icons <- list(
+    "Fish"           = '<path d="M2 12c3-4 9-6 14-4l4 4-4 4c-5 2-11 0-14-4z"/><circle cx="7" cy="11" r="0.9" fill="currentColor" stroke="none"/>',
+    "Crustaceans"    = '<ellipse cx="6" cy="12" rx="2.6" ry="1.6"/><ellipse cx="12" cy="12" rx="2.6" ry="1.6"/><ellipse cx="18" cy="12" rx="2.6" ry="1.6"/>',
+    "Plankton"       = '<circle cx="12" cy="12" r="4.5"/><line x1="12" y1="3" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="21"/><line x1="3" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="21" y2="12"/>',
+    "Birds & Mammals" = '<path d="M3 14c3-4 6-4 9 0 3-4 6-4 9 0"/>')
+
+  div(
+    class = "cc-ds-tree",
+    id    = "cc_ds_tree",
+    `data-categories` = as.character(jsonlite::toJSON(cat_map, auto_unbox = TRUE)),
+    `data-cat-order`  = paste(cats, collapse = "|"),
+    `data-cat-icons`  = as.character(jsonlite::toJSON(cat_icons, auto_unbox = TRUE)),
+    div(
+      class = "d-flex justify-content-between align-items-center mb-2",
+      tags$span(
+        class = "d-inline-flex align-items-center gap-2",
+        bs_icon("layers"), tags$strong("Datasets")),
+      tags$span(
+        id    = "ds_tree_total",
+        class = "small text-muted",
+        bio_ds_label(d_bio_datasets$dataset_key))),
+    checkboxGroupInput(
+      "sel_bio_ds",
+      NULL,
+      choices  = setNames(d_bio_datasets$dataset_key, d_bio_datasets$label),
+      selected = d_bio_datasets$dataset_key,
+      width    = "100%"),
+    div(
+      class = "small text-muted",
+      "Click a category to expand it and toggle individual datasets.")
+  )
+}
+
+
+#' Top-bar Taxa Search
 #'
-#' Creates a multi-tabbed modal dialog for selecting species, environmental
-#' variables, temporal filters, depth ranges, and spatial regions.
+#' The Species/Taxa control that lives directly in the main content top bar
+#' (not in a modal) -- taxa search is the PRIMARY control, per the redesign:
+#' search is always visible, and changing it applies immediately rather than
+#' waiting behind a Submit button. \code{sel_name}/\code{ck_children} keep the
+#' SAME input ids they always had, so every server.R reader of
+#' \code{input$sel_name} etc. needs no change -- only where the widgets live
+#' in the DOM moved, not their identity.
 #'
-#' @return Shiny modal dialog object with four tabs:
-#'   \itemize{
-#'     \item Species - selectizeInput for multiple species selection
-#'     \item Environmental - variable and depth range selection
-#'     \item Temporal - quarter and date range selection
-#'     \item Spatial - interactive map for polygon drawing
-#'   }
+#' Per the approved mockup, this card shows the search box alone -- no
+#' Datasets picker inline. That control (\code{sel_bio_ds}) still exists with
+#' the same id and choices; it moved into \code{modal_edit_filters()}'s
+#' Datasets tree, alongside Depth/Layers/Time, since the mockup's top bar
+#' never shows a dataset toggle. Also: single-select now (\code{multiple =
+#' FALSE}), matching the mockup showing exactly one taxon at a time -- this
+#' session's own earlier multi-select was never something Betty asked for or
+#' tested against; get_sp() already accepts a length-1 vector unchanged.
 #'
-#' @details
-#' The modal dialog uses \code{bslib::navset_tab()} for tab organization and
-#' \code{shiny::input_task_button()} for submission handling. Spatial filtering
-#' is implemented via \code{maplibre} with drawing capabilities.
+#' Visually restyled (see the \code{.cc-search-combo} CSS + selectize
+#' \code{render} templates in ui.R) to read as a search box -- magnifying-
+#' glass icon, bold selected name with a muted dataset suffix, chevron -- with
+#' a grouped, dataset-headed dropdown, instead of the plain stock selectize
+#' control. Purely a client-side skin: choices/selected/the input id are
+#' unchanged, so this is not a behavior change server.R needs to know about.
 #'
-#' @examples
-#' \dontrun{
-#' # in server.R
-#' observeEvent(input$show_filters, {
-#'   showModal(modal_data())
-#' })
-#' }
+#' @return a \code{tagList} for the top-bar "Species / Taxa" card
 #'
-#' @seealso \code{\link{prep_filter_summary}} for filter summary generation
+#' @importFrom shiny selectizeInput checkboxInput tagList
 #'
-#' @importFrom shiny modalDialog selectizeInput selectInput numericRangeInput dateRangeInput modalButton tagList
-#' @importFrom bslib navset_tab nav_panel
+#' @export
+top_bar_taxa_ui <- function() {
+  tagList(
+    div(class = "cc-card-label small text-muted text-uppercase mb-1", "Species / Taxa"),
+    div(
+      # .cc-combo2: the custom grouped/drilldown search panel (matching the
+      # approved mockup) that ui.R's JS builds around the REAL selectizeInput
+      # below -- see that JS for why the widget stays in the DOM (server.R's
+      # updateSelectizeInput(session, "sel_name", ...) still targets it) but
+      # is visually hidden, driven entirely through its own JS API
+      # (setValue()/.options/.optgroups) rather than being replaced by
+      # something Shiny doesn't know about. `sel_name`'s id, choices shape
+      # and reactive value are completely unchanged.
+      #
+      # data-extra-*: "Include taxonomic children" (ck_children) now lives as a
+      # row at the TOP of the dropdown panel rather than a separate control in
+      # the card -- the real checkboxInput stays in the DOM, hidden, and the
+      # combo JS renders a mirror row that toggles it (same pattern as the
+      # hidden selectize). Keeps input$ck_children and every reader unchanged.
+      class = "cc-combo2",
+      `data-placeholder-main`  = "Search species / taxa…",
+      `data-placeholder-drill` = "Search taxa — sardine, krill, seabird…",
+      `data-noun`              = "taxa",
+      `data-extra-id`    = "ck_children",
+      `data-extra-label` = "Include taxonomic children",
+      `data-extra-tip`   = paste(
+        "Include observations recorded at finer taxonomic levels, e.g.",
+        "observations to Genus and Species when the taxon picked is a Family;",
+        "otherwise only observations recorded to the chosen level."),
+      div(
+        class = "cc-combo2-btn", tabindex = "0", role = "button",
+        `aria-haspopup` = "listbox",
+        bs_icon("search", class = "cc-combo2-icon"),
+        tags$span(class = "cc-combo2-label"),
+        bs_icon("caret-down-fill", class = "cc-combo2-chevron")),
+      div(class = "cc-combo2-panel"),
+      selectizeInput(
+        "sel_name",
+        label    = NULL,
+        # dataset-grouped choices, mirroring env_var_choices()'s optgroups
+        # (global.R::sp_choices()) -- this widget always exists now (no
+        # longer rebuilt each time a modal opens), so its choices are set
+        # once, here, at UI build time
+        choices  = sp_choices(),
+        selected = default_sp_name,
+        multiple = FALSE,
+        width    = "100%",
+        options  = list(
+          placeholder = "Search species / taxa…",
+          # render templates split the item's own dataset-suffixed label
+          # (sp_choices() bakes "Name — Dataset" into every option) back apart
+          # using selectize's own `optgroup` field -- which Shiny sets to the
+          # SAME dataset string -- rather than a fragile string split, so a
+          # taxon common name that happens to contain " — " itself can't
+          # misparse. See the .cc-search-combo CSS in ui.R for the styling.
+          # I(...) passes this through as literal JS, not a quoted R string.
+          render = I("{
+            option: function(item, escape) {
+              var ds = item.optgroup || '';
+              var nm = ds && item.label.slice(-ds.length) === ds
+                ? item.label.slice(0, -(ds.length + 3)) : item.label;
+              return '<div class=\"cc-search-opt\"><span class=\"cc-search-opt-name\">' +
+                escape(nm) + '</span>' +
+                (ds ? '<span class=\"cc-search-opt-ds\"> — ' + escape(ds) + '</span>' : '') +
+                '</div>';
+            },
+            item: function(item, escape) {
+              var ds = item.optgroup || '';
+              var nm = ds && item.label.slice(-ds.length) === ds
+                ? item.label.slice(0, -(ds.length + 3)) : item.label;
+              return '<div class=\"cc-search-item\"><span class=\"cc-search-item-name\">' +
+                escape(nm) + '</span>' +
+                (ds ? '<span class=\"cc-search-item-ds\"> — ' + escape(ds) + '</span>' : '') +
+                '</div>';
+            },
+            optgroup_header: function(data, escape) {
+              return '<div class=\"cc-search-grp\">' + escape(data.label) + '</div>';
+            }
+          }"))),
+      # real input, kept in the DOM but visually hidden -- the combo JS shows a
+      # mirror of it at the top of the dropdown panel (see data-extra-* above)
+      div(
+        class = "cc-combo2-extra-src",
+        checkboxInput("ck_children", label = "Include taxonomic children",
+                      value = TRUE)))
+  )
+}
+
+#' Map-tab controls (Split / Swipe)
+#'
+#' Was Split/Swipe + Stats + Options + Map Layers on the filter-chip row. Stats,
+#' Options and Map Layers moved into the always-visible left panel
+#' (\code{map_panel_ui()}); only the compare-layout toggle still rides the chip
+#' row, so \code{cmp_layout} keeps its id, placement and reactive wiring.
+#'
+#' @return a tagList holding just the Split/Swipe control
+#' @export
+map_tab_controls <- function() {
+  tagList(
+    # compare layout: side-by-side synced maps (default) vs the draggable swipe
+    # divider. Only meaningful while comparing -- hidden by CSS (body:has on
+    # #cmp_env_toggle) when compare is off, rather than a conditionalPanel that
+    # misbehaves as a flex item. Drives server.R's renderMaplibreCompare()
+    # `mode=`; both keep the "map" element id and before/after proxy sides.
+    div(
+      class = "cc-cmp-layout-wrap",
+      radioGroupButtons(
+        "cmp_layout",
+        label    = NULL,
+        choices  = c("Split" = "split", "Swipe" = "swipe"),
+        selected = "split",
+        size     = "sm",
+        status   = "outline-secondary"))
+  )
+}
+
+#' Per-group thumbnail for the Map Layers modal
+#'
+#' A tiny abstract map -- a shared coastline wedge plus a group-specific accent
+#' motif -- rendered as an inline data-URI so each card in \code{modal_map_layers()}
+#' shows what kind of thing the layer is. Colours track the group.
+cc_lyr_thumb <- function(group) {
+  motif <- list(
+    "Administrative"     = list(a = "#7fbfff",
+      m = "<path d='M60 2v62M80 2v62M44 20h48M40 42h52' stroke='%COL%' stroke-width='2.6' opacity='.9'/>"),
+    "Maritime Zones"     = list(a = "#4aa8ff",
+      m = "<path d='M42 2C31 18 35 30 24 45 19 53 26 59 22 68' fill='none' stroke='%COL%' stroke-width='3' stroke-dasharray='4 4'/>"),
+    "Ecological"         = list(a = "#5fd08f",
+      m = "<ellipse cx='54' cy='16' rx='11' ry='7' fill='%COL%' opacity='.85'/><ellipse cx='41' cy='41' rx='10' ry='6' fill='%COL%' opacity='.85'/><ellipse cx='52' cy='60' rx='10' ry='6' fill='%COL%' opacity='.85'/>"),
+    "Protected Areas"    = list(a = "#f79b57",
+      m = "<circle cx='54' cy='14' r='4.5' fill='%COL%'/><circle cx='41' cy='37' r='4.5' fill='%COL%'/><circle cx='52' cy='58' r='4.5' fill='%COL%'/>"),
+    "Energy & Industry"  = list(a = "#f5c94e",
+      m = "<rect x='43' y='13' width='10' height='10' rx='1.5' fill='%COL%'/><rect x='55' y='13' width='10' height='10' rx='1.5' fill='%COL%' opacity='.75'/><rect x='43' y='25' width='10' height='10' rx='1.5' fill='%COL%' opacity='.75'/>"))
+  cfg <- motif[[group]]
+  if (is.null(cfg)) cfg <- list(a = "#7fbfff",
+    m = "<path d='M42 2C31 18 35 30 24 45 19 53 26 59 22 68' fill='none' stroke='%COL%' stroke-width='2.8'/>")
+  # a soft blue coastline wedge (not black) with a thicker outline
+  coast <- paste0(
+    "<path d='M42 2C31 18 35 30 24 45 19 53 26 59 22 68H0V0Z' fill='#1c3a55' opacity='.55'/>",
+    "<path d='M42 2C31 18 35 30 24 45 19 53 26 59 22 68' fill='none' stroke='#3f7fb8' stroke-width='2' opacity='.7'/>")
+  svg <- paste0(
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 66'>",
+    "<rect width='100' height='66' fill='#0e1c2b'/>", coast,
+    gsub("%COL%", cfg$a, cfg$m, fixed = TRUE), "</svg>")
+  paste0("url('data:image/svg+xml,", utils::URLencode(svg, reserved = TRUE), "')")
+}
+
+#' The "Map Layers" overlay (functions.R -> server.R input$open_map_layers)
+#'
+#' A full-width modal of reference-boundary layers as thumbnail cards, grouped
+#' by \code{d_spatial_layers$group}. Each group is a \code{checkboxGroupInput}
+#' with the SAME ids the panel used (\code{lyr_<make.names(group)>}), so
+#' server.R's apply observer and \code{rx$spatial_visible} need no change -- the
+#' checkboxes just live in a modal again, styled as cards (CSS .cc-lyr-grid).
+#'
+#' @return a \code{modalDialog}
+#' @export
+#' Corner dismiss (X) button for a modalDialog title bar
+#'
+#' Bootstrap handles \code{data-bs-dismiss="modal"} itself and Shiny removes the
+#' modal wrapper on \code{hidden.bs.modal}, so this needs no server observer --
+#' the same close path as the backdrop click / Esc these modals already use.
+#' Drop it into a modal's \code{title = tagList(...)}; \code{.cc-modal-x} (ui.R)
+#' floats it to the top-right corner.
+#'
+#' @return a \code{<button class="btn-close">} tag
+#' @export
+modal_x_btn <- function() tags$button(
+  type = "button", class = "btn-close cc-modal-x",
+  `data-bs-dismiss` = "modal", `aria-label` = "Close")
+
+#' Feedback modal
+#'
+#' A note + optional email + an optional full-view screenshot (captured by
+#' \code{app/www/cc-feedback.js} via the browser's screen-share prompt, with a
+#' pen/box/arrow/text annotator), posted CLIENT-SIDE -- no server round-trip --
+#' to the Google Apps Script at \code{endpoint}, which writes a Sheet row, saves
+#' the screenshot to Drive, mails the recipients tab and files a public issue in
+#' \code{CalCOFI/db-viz-hex} without the email, then answers \code{{ok, id,
+#' image_url, issue_url, status}}. The script is generated by
+#' \code{calcofi4r::cc_feedback_script()} (see \code{feedback/README.md}); same
+#' contract as \code{CalCOFI/explore}'s \code{src/feedback.tsx}. Opened from the
+#' \code{.cc-feedback-link} navbar item (server: \code{input$open_feedback}).
+#'
+#' @param release the frozen DB release string, stamped into the report
+#' @param endpoint the Apps Script \code{/exec} URL; \code{""} -> the dialog
+#'   offers only the "open a GitHub issue" fallback
+#' @return a Shiny \code{modalDialog}
+#'
+#' @importFrom shiny modalDialog textAreaInput textInput tags tagList
+#' @export
+modal_feedback <- function(release = "", endpoint = "") {
+  modalDialog(
+    title = tagList(bs_icon("chat-square-text"), "Feedback", modal_x_btn()),
+    div(
+      class = "cc-feedback-modal",
+      `data-endpoint` = endpoint,
+      `data-release`  = release,
+      div(
+        class = "cc-fb-grid",
+        # left: the note
+        div(
+          class = "cc-fb-col",
+          textAreaInput(
+            "fb_text",
+            "What happened, or what would help?",
+            rows = 4, width = "100%",
+            placeholder = paste0(
+              "e.g. the 1955 oxygen spike near 1,144 m looks wrong — ",
+              "the station reads 2.2 ml/L…")),
+          textInput(
+            "fb_email",
+            tagList("Email ", tags$span(
+              class = "cc-fb-sub",
+              "— optional, for a reply. Never shown publicly.")),
+            width = "100%", placeholder = "you@example.org"),
+          tags$p(
+            class = "cc-fb-sent",
+            sprintf("Sends your note, this view’s link, the release (%s) and screen size. ",
+                    if (nzchar(release)) release else "this build"),
+            tags$span(
+              class = "cc-fb-peek", role = "button", tabindex = "0",
+              `data-bs-toggle` = "collapse", `data-bs-target` = "#cc-fb-detail",
+              "What that looks like ›")),
+          div(
+            class = "collapse", id = "cc-fb-detail",
+            tags$ul(
+              class = "cc-fb-detail",
+              tags$li(tags$b("Link"), " — reopens this exact view"),
+              tags$li(tags$b("Context"),
+                      sprintf(" — release %s, viewport, theme",
+                              if (nzchar(release)) release else "(unversioned dev build)")),
+              tags$li(tags$b("Not sent"),
+                      " — anything else; the email is stripped from the public issue")))),
+        # right: the screenshot (captured + filled by the CCFeedback script in
+        # ui.R when the modal opens; the maps carry preserveDrawingBuffer)
+        div(
+          class = "cc-fb-col",
+          tags$label(class = "cc-fb-shotlabel", "Screenshot of this view"),
+          div(
+            class = "cc-fb-shot",
+            # cc-feedback.js fills this with a Capture button on modal open, then
+            # the screenshot after the browser's share-tab prompt.
+            div(class = "cc-fb-shot-img",
+                div(class = "cc-fb-shot-wait", "…")),
+            div(
+              class = "cc-fb-shot-bar",
+              tags$label(
+                class = "cc-fb-inc",
+                tags$input(type = "checkbox", id = "fb_include", checked = NA),
+                " include"),
+              tags$button(type = "button", class = "cc-fb-edit",
+                          bs_icon("pencil"), " Annotate"),
+              tags$button(type = "button", class = "cc-fb-retake",
+                          bs_icon("arrow-repeat"), " retake")))))),
+    footer = tagList(
+      tags$a(class = "cc-fb-gh", href = "#", "Open a GitHub issue instead"),
+      tags$span(class = "cc-fb-status", `aria-live` = "polite"),
+      tags$button(type = "button", class = "btn btn-primary cc-fb-send",
+                  bs_icon("send"), "Send")),
+    size = "l", easyClose = TRUE, fade = FALSE)
+}
+
+modal_map_layers <- function() {
+  layer_choices <- split(
+    setNames(d_spatial_layers$dataset_id, d_spatial_layers$layer),
+    d_spatial_layers$group)
+  grps <- names(layer_choices)
+  mid  <- ceiling(length(grps) / 2)
+
+  grp_block <- function(grp) {
+    ic <- switch(grp,
+      "Administrative" = "bank", "Maritime Zones" = "bullseye",
+      "Ecological" = "tree", "Protected Areas" = "shield",
+      "Energy & Industry" = "lightning-charge", "diagram-3")
+    div(
+      class = "cc-lyr-block",
+      div(class = "cc-lyr-block-head",
+          bs_icon(ic, class = "cc-lyr-block-icon"),
+          tags$span(class = "cc-lyr-block-name", grp),
+          tags$span(class = "cc-lyr-block-count small",
+                    sprintf("%d layers", length(layer_choices[[grp]])))),
+      div(
+        class = "cc-lyr-grid",
+        style = paste0("--cc-lyr-thumb: ", cc_lyr_thumb(grp), ";"),
+        checkboxGroupInput(
+          paste0("lyr_", make.names(grp)),
+          label    = NULL,
+          choices  = layer_choices[[grp]],
+          selected = intersect(
+            d_spatial_layers$dataset_id[d_spatial_layers$default_visible],
+            layer_choices[[grp]]))))
+  }
+
+  modalDialog(
+    title = tagList(
+      modal_x_btn(),
+      "Layers",
+      div(class = "small text-muted fw-normal",
+          "Selecting a layer shows its boundary on the map, filters the data to
+           it, and becomes available under Summarize Within on Download.")),
+    size = "l", easyClose = TRUE, fade = FALSE,
+    fluidRow(
+      column(6, lapply(grps[seq_len(mid)], grp_block)),
+      column(6, lapply(grps[(mid + 1):length(grps)], grp_block))),
+    footer = tagList(
+      div(class = "small text-muted me-auto",
+          textOutput("n_layers_selected", inline = TRUE)),
+      modalButton("Cancel"),
+      actionButton("btn_layers_apply", "Apply", class = "btn-primary")))
+}
+
+#' The Map tab's left panel -- a stacked, collapsible pane
+#'
+#' NOT a tab set (no pill nav -- the section headers ARE the navigation): one
+#' vertical scroll holding three collapsible sections -- Filter Summary, Summary
+#' Statistics, Plot Options. Map Layers moved OUT to a chip-row button + rich
+#' modal (functions.R::modal_map_layers()). Collapse the whole pane and it
+#' becomes a vertical icon rail; a rail icon expands + scrolls to its section.
+#'
+#' Every input/output id already existed -- this only relocates them:
+#'   * Summary -> \code{filter_summary}
+#'   * Stats   -> \code{summary_statistics} + \code{taxa_tree}
+#'   * Options -> \code{sel_agg_unit} + \code{poly_note} + \code{sel_env_stat}
+#'
+#' @return the \code{.cc-panel} div (the stacked-section panel)
+#' @export
+map_panel_ui <- function() {
+  sec_head <- function(sec, icon, label) div(
+    class = "cc-sec-head", `data-sec` = sec, role = "button", tabindex = "0",
+    bs_icon(icon, class = "cc-sec-icon"),
+    tags$span(class = "cc-sec-title", label),
+    bs_icon("chevron-down", class = "cc-sec-chev"))
+
+  div(
+    class = "cc-panel",
+    div(
+      class = "cc-panel-full",
+      # slim bar: a left chevron that collapses the panel to a thin strip, and
+      # a little visual breathing room above the first section
+      div(
+        class = "cc-panel-bar",
+        tags$button(
+          type = "button", class = "cc-panel-toggle",
+          `aria-label` = "Collapse panel", title = "Collapse panel",
+          bs_icon("chevron-left"))),
+      div(
+        class = "cc-panel-scroll",
+
+        # Filter Summary starts collapsed -- fine print; one click opens it.
+        tags$section(
+          class = "cc-sec is-shut", id = "cc-sec-summary",
+          sec_head("summary", "funnel", "Filter Summary"),
+          div(class = "cc-sec-body", uiOutput("filter_summary"))),
+
+        tags$section(
+          class = "cc-sec is-shut", id = "cc-sec-stats",
+          sec_head("stats", "bar-chart", "Summary Statistics"),
+          div(class = "cc-sec-body",
+              uiOutput("summary_statistics"))),
+
+        tags$section(
+          class = "cc-sec", id = "cc-sec-options",
+          sec_head("options", "sliders", "Plot Options"),
+          div(
+            class = "cc-sec-body",
+            selectizeInput(
+              "sel_agg_unit",
+              tagList(
+                "Summarize Within",
+                popover(
+                  bs_icon("question-circle"),
+                  HTML("Choose the unit the map aggregates into.<br>
+                        <strong>Hexagons (H3)</strong> bins observations into
+                        equal-area cells that get finer as you zoom in.<br>
+                        A <strong>boundary layer</strong> instead reports one
+                        value per polygon — per MPA, per county, per ecoregion.<br><br>
+                        One layer at a time: the layers overlap (a station can sit
+                        inside a county, an ecoregion <em>and</em> an MPA, and all
+                        three are true), so summarizing across them would count the
+                        same observation more than once.<br><br>
+                        Polygons with no CalCOFI samples are drawn as an outline
+                        and labelled <em>no data</em> — they are not zero."))),
+              choices  = agg_unit_choices,
+              selected = "hex",
+              width    = "100%",
+              # render the dropdown at <body> level so it is not clipped by the
+              # panel's own overflow scroll, and give it room
+              options  = list(dropdownParent = "body")),
+            uiOutput("poly_note"),
+            # Restrict the map (and the plot/download data) to one boundary
+            # layer's polygons -- the hexes stay hexes, just clipped to that
+            # area. Only relevant in Hexagons mode: a polygon summary already
+            # shows exactly one layer, so "restrict" would be redundant -- hide
+            # it then (and the server ignores its value, see do_apply_filters).
+            conditionalPanel(
+              "input.sel_agg_unit == 'hex'",
+              div(
+                class = "cc-restrict-wrap",
+                selectizeInput(
+                  "sel_map_area",
+                  tagList(
+                    "Restrict map to area",
+                    popover(
+                      bs_icon("question-circle"),
+                      HTML("Show only the hexes that fall inside a boundary
+                            layer &mdash; e.g. just the BOEM Wind Planning Areas.
+                            The data stays binned as hexagons; it is only clipped
+                            to the area."))),
+                  choices  = map_area_choices,
+                  selected = "__all__",
+                  width    = "100%",
+                  options  = list(dropdownParent = "body")))),
+            selectInput(
+              "sel_env_stat",
+              "Environmental Summary Statistic",
+              choices  = env_stat_choices,
+              selected = "mean",
+              width    = "100%"))),
+
+        # Download -- moved off the navbar into the panel, under Plot Options.
+        # Starts collapsed. Leads with the INTEGRATED dataset (always in the
+        # bundle -- server.R forces "int" into all_sel); the per-chart tables
+        # and the bulky raw source files are behind <details>. Ids unchanged
+        # (sel_proc_data_download, sel_raw_data_download, download_data). The
+        # bio<->env match tolerance uses the defaults (default_max_hours_diff /
+        # _meters_diff); server.R falls back to those when input$time_window is
+        # absent, so the two numericInputs were dropped as noise for most users.
+        tags$section(
+          class = "cc-sec is-shut", id = "cc-sec-download",
+          sec_head("download", "download", "Download data"),
+          div(
+            class = "cc-sec-body cc-dl-body",
+            div(
+              class = "cc-dl-hero",
+              div(class = "cc-dl-hero-h",
+                  bs_icon("box-arrow-down"), "Integrated dataset"),
+              div(class = "cc-dl-hero-d",
+                  "Species matched to environment for your current filters, with
+                   the SQL to reproduce it anywhere.")),
+            tags$details(
+              class = "cc-dl-more",
+              tags$summary("Also include the chart data"),
+              checkboxGroupInput(
+                "sel_proc_data_download", NULL,
+                c("Map data"           = "map",
+                  "Time-series data"   = "ts",
+                  "Scatterplot data"   = "splot",
+                  "Depth Profile data" = "dprof"),
+                width = "100%")),
+            tags$details(
+              class = "cc-dl-more",
+              tags$summary("Raw source files"),
+              checkboxGroupInput(
+                "sel_raw_data_download", NULL,
+                c("Raw environmental data" = "raw_env",
+                  "Raw species data"       = "raw_sp"),
+                width = "100%")),
+            downloadButton("download_data", "Download",
+                           class = "btn-primary w-100")))))
+  )
+}
+
+#' Top-bar "Compare Environmental Variable" Card
+#'
+#' The redesign's second top-bar card: off by default (map shows species
+#' distribution only), toggled on to reveal the variable picker and overlay a
+#' matching environmental layer. `cmp_env_toggle`/`sel_env_var`/
+#' `sel_env_all_vars` are read the same way server.R always read them
+#' (`sel_env_var` keeps its id) -- this only relocates the picker into
+#' the always-visible top bar instead of a modal tab.
+#'
+#' @param env_var currently selected environmental measurement_type
+#'
+#' @return a tagList for the top-bar "Compare Environmental Variable" card
+#'
+#' @importFrom shinyWidgets switchInput
+#' @importFrom shiny selectizeInput checkboxInput conditionalPanel tagList
+#'
+#' @export
+top_bar_env_ui <- function(env_var = "temperature") {
+  tagList(
+    div(
+      # label left; card's right edge shows a "+ Add a variable to compare"
+      # button while OFF, the BS5 switch while ON. Both always in the DOM -- CSS
+      # swaps them on `#cmp_env_toggle:checked`. `add_env_var` -> server
+      # `update_switch("cmp_env_toggle", TRUE)`. Same id / TRUE-FALSE value:
+      # every reader / conditionalPanel is unaffected.
+      class = "cc-env-row",
+      div(class = "cc-card-label small text-muted text-uppercase", "Environment"),
+      actionLink(
+        "add_env_var",
+        tagList(bs_icon("plus-lg"), "Add a variable to compare"),
+        class = "cc-env-add"),
+      div(class = "cc-env-switch",
+          input_switch("cmp_env_toggle", label = NULL, value = FALSE))),
+    conditionalPanel(
+      "input.cmp_env_toggle",
+      div(
+        # same .cc-combo2 pattern as top_bar_taxa_ui()'s Species/Taxa box, but
+        # FLAT (`data-flat`): only ~30 headline variables across 5 groups, so
+        # every group renders open and in full -- no accordion, no drill-in.
+        class = "cc-combo2 cc-combo2-flat",
+        `data-flat`              = "true",
+        `data-placeholder-main`  = "Search environmental variables…",
+        `data-placeholder-drill` = "Search variables — temperature, oxygen…",
+        `data-noun`              = "variables",
+        `data-extra-id`    = "sel_env_all_vars",
+        `data-extra-label` = sprintf("Show all %d variables", nrow(d_env_vars)),
+        `data-extra-tip`   = paste(
+          "Off: just the headline variables people usually plot.",
+          "On: adds instrument channels (transmissometer, ISUS voltage, PAR),",
+          "the pre-QC series, and averaged / corrected / per-replicate variants."),
+        div(
+          class = "cc-combo2-btn", tabindex = "0", role = "button",
+          `aria-haspopup` = "listbox",
+          bs_icon("search", class = "cc-combo2-icon"),
+          tags$span(class = "cc-combo2-label"),
+          bs_icon("caret-down-fill", class = "cc-combo2-chevron")),
+        div(class = "cc-combo2-panel"),
+        selectizeInput(
+          "sel_env_var",
+          label    = NULL,
+          # grouped by dataset; `selected` is a measurement_type, not a label
+          choices  = env_var_choices(),
+          selected = env_var,
+          width    = "100%",
+          options  = list(
+            placeholder = "Search environmental variables…",
+            # env_var_choices()'s labels carry no dataset suffix (unlike
+            # sp_choices()) -- the dataset only lives in `optgroup` -- so this
+            # template just appends it, no stripping needed.
+            render = I("{
+              option: function(item, escape) {
+                return '<div class=\"cc-search-opt\"><span class=\"cc-search-opt-name\">' +
+                  escape(item.label) + '</span>' +
+                  (item.optgroup ? '<span class=\"cc-search-opt-ds\"> — ' + escape(item.optgroup) + '</span>' : '') +
+                  '</div>';
+              },
+              item: function(item, escape) {
+                return '<div class=\"cc-search-item\"><span class=\"cc-search-item-name\">' +
+                  escape(item.label) + '</span>' +
+                  (item.optgroup ? '<span class=\"cc-search-item-ds\"> — ' + escape(item.optgroup) + '</span>' : '') +
+                  '</div>';
+              },
+              optgroup_header: function(data, escape) {
+                return '<div class=\"cc-search-grp\">' + escape(data.label) + '</div>';
+              }
+            }"))),
+        # real input, hidden -- mirrored at the top of the dropdown panel
+        div(
+          class = "cc-combo2-extra-src",
+          checkboxInput("sel_env_all_vars",
+                        label = sprintf("Show all %d variables", nrow(d_env_vars)),
+                        value = FALSE)))),
+    conditionalPanel(
+      "!input.cmp_env_toggle",
+      div(
+        class = "small text-muted",
+        "Add temperature, salinity, oxygen or chlorophyll to compare against where the species was found."))
+  )
+}
+
+#' Edit Filters Modal Dialog
+#'
+#' The redesign's "Edit filters" panel, matching the approved mockup: a
+#' single compact stack -- Datasets, Depth, Layers (spatial filter, opens
+#' \code{modal_spatial_filter()} via "Change"), Time (quarter + date range) --
+#' rather than the old two-tab, full-width dialog. Taxa and Environmental
+#' Variable live in the always-visible top bar
+#' (\code{top_bar_taxa_ui()}/\code{top_bar_env_ui()}); everything here is
+#' set-once/rarely-touched and collapses behind the "Edit filters" link.
+#'
+#' No parameters: unlike the old `modal_data()`, nothing here needs to
+#' remember a prior selection across reopens -- `sel_qtr`, `sel_date_range`,
+#' `sel_depth_range`, `sel_bio_ds` and `sel_places_cat` are ordinary Shiny
+#' inputs that keep their own state whether or not this modal is currently
+#' open.
+#'
+#' \code{sel_qtr} is now \code{shinyWidgets::checkboxGroupButtons()} (a row of
+#' toggle pills, matching the mockup) instead of a multi-select dropdown, and
+#' \code{sel_depth_range} is now \code{sliderInput()} (a range slider) instead
+#' of two numeric boxes -- both keep their id and both still resolve to the
+#' same value shape (`sel_qtr`: a character vector of "1".."4"; `sel_depth_range`:
+#' a length-2 numeric vector), so nothing downstream that reads
+#' \code{input$sel_qtr}/\code{input$sel_depth_range} needed to change.
+#' \code{sel_date_range} deliberately stays a \code{dateRangeInput} rather than
+#' becoming a numeric year slider -- it feeds real Date-typed SQL filtering
+#' downstream, and changing its value TYPE (not just its widget) is a
+#' correctness risk not worth taking for a cosmetic match.
+#'
+#' @return Shiny modal dialog object
+#'
+#' @importFrom shiny modalDialog sliderInput dateRangeInput actionLink modalButton tagList textOutput
+#' @importFrom shinyWidgets checkboxGroupButtons
+#'
+#' @export
+modal_edit_filters <- function() {
+  modalDialog(
+    title = tagList("Filters", modal_x_btn()),
+    class = "cc-filters-modal",
+
+    dataset_category_tree_ui(),
+    hr(),
+
+    div(
+      class = "d-flex align-items-center gap-2 mb-1",
+      bs_icon("arrow-down"), tags$strong("Depth")),
+    sliderInput(
+      "sel_depth_range",
+      label = NULL,
+      # default spans the full range (no filter); depth only narrows the
+      # environmental layers -- get_sp() has no depth filter
+      min = 0, max = 515, value = c(0, 515),
+      post  = " m",
+      width = "100%"),
+    div(class = "small text-muted mt-1",
+        "Environmental layers only — species observations aren't depth-filtered."),
+    hr(),
+
+    div(
+      class = "d-flex justify-content-between align-items-start gap-2 mb-1",
+      div(
+        div(
+          class = "d-flex align-items-center gap-2",
+          bs_icon("layers"), tags$strong("Layers"),
+          tags$span(class = "text-muted", " — "),
+          textOutput("spatial_layers_summary", inline = TRUE)),
+        div(
+          class = "small text-muted",
+          "Shown on map, filters data, and available to summarize by")),
+      actionLink("edit_spatial", "Change", class = "flex-shrink-0")),
+    hr(),
+
+    div(
+      class = "d-flex align-items-center gap-2 mb-2",
+      bs_icon("calendar3"), tags$strong("Time")),
+    checkboxGroupButtons(
+      "sel_qtr",
+      label    = NULL,
+      choices  = c(Q1 = 1, Q2 = 2, Q3 = 3, Q4 = 4),
+      selected = 1:4,
+      status   = "outline-primary",
+      size     = "sm"),
+    dateRangeInput(
+      "sel_date_range",
+      label     = NULL,
+      startview = "year",
+      start = min_max_date[1],
+      end   = min_max_date[2],
+      min   = min_max_date[1],
+      max   = min_max_date[2],
+      width = "100%"),
+
+    footer = tagList(
+      actionLink("reset_filters", "Reset all", class = "me-auto text-muted"),
+      modalButton("Cancel"),
+      input_task_button("submit", "Apply") ),
+
+    size = "s",
+    fade = FALSE
+  )
+}
+
+#' Spatial Filter Modal ("Layers" > Change)
+#'
+#' The pre-defined-zones / drawn-polygon picker -- unchanged from the
+#' redesign's earlier "Spatial" tab, just its own dialog now instead of a tab
+#' inside \code{modal_edit_filters()}, reached via the "Layers" row's "Change"
+#' link. `sel_places_cat`/`spatial_filter_map`/`tbl_places` keep the exact
+#' same ids, so server.R's map-click/table-click handlers need no change --
+#' only the trigger that opens this dialog moved (`input$edit_spatial`
+#' instead of being rendered as part of `input$edit_filters`).
+#'
+#' @return Shiny modal dialog object
+#'
+#' @importFrom shiny modalDialog selectInput fluidRow column modalButton tagList
 #' @importFrom maplibre maplibreOutput
 #'
 #' @export
-#' @param env_var currently selected environmental measurement_type, so
-#'   reopening the modal does not silently reset it
-#' @param bio_ds currently selected biological \code{dataset_key}s, for the same
-#'   reason; \code{NULL} selects every dataset
-modal_data <- function(env_var = "temperature", bio_ds = NULL) {
-  bio_ds <- if (is.null(bio_ds)) d_bio_datasets$dataset_key
-            else intersect(bio_ds, d_bio_datasets$dataset_key)
-
+modal_spatial_filter <- function() {
   modalDialog(
-    title = "Data Selection",
-    navset_tab(
-
-      nav_panel(
-        "Taxa", br(),
-        # Which datasets contribute, and a way to work in just one. The app
-        # reads every biological dataset in the release (it used to be ichthyo
-        # alone), so without this the taxa list is 1,377 names with no
-        # indication of where any of them came from. 80 taxa appear in more than
-        # one dataset, so this filters observations too, not only the picker.
-        #
-        # In a POPOVER rather than inline, because the list is one line longer
-        # per ingest and there is no end to that: at 14 datasets it filled the
-        # dialog and pushed the taxa picker (the thing this tab is for) below
-        # the fold. The trigger states the selection, so nothing is hidden by
-        # being one click away.
-        div(
-          class = "d-flex align-items-center flex-wrap gap-2 mb-3",
-          tags$label(class = "col-form-label fw-semibold py-0", "Datasets"),
-          popover(
-            tags$button(
-              type  = "button",
-              class = "btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-2",
-              bs_icon("database"),
-              # the one element the JS rewrites; it lives in the TRIGGER, which
-              # stays put, not in the content Bootstrap moves in and out
-              tags$span(id = "bio_ds_count", bio_ds_label(bio_ds)),
-              bs_icon("chevron-down")),
-            div(
-              class = "d-flex justify-content-between align-items-start gap-3 mb-2",
-              tags$span(
-                class = "small text-muted",
-                "Unchecking a dataset removes its taxa from the list of
-                 selectable taxa plus its observations from the results.
-                 (Unchecking all datasets is the same as checking them all.)"),
-              tags$button(
-                type  = "button",
-                class = "btn btn-outline-secondary btn-sm flex-shrink-0 cc-ds-all",
-                "Select all")),
-            checkboxGroupInput(
-              "sel_bio_ds",
-              NULL,
-              choices  = setNames(d_bio_datasets$dataset_key, d_bio_datasets$label),
-              selected = bio_ds,
-              width    = "100%"),
-            title     = "Taxa datasets",
-            placement = "bottom",
-            # container: the popover content is otherwise re-parented to <body>,
-            # outside the modal, where Bootstrap's modal focus trap yanks focus
-            # straight back out of it and the checkboxes cannot be reached by
-            # keyboard at all. Keeping it inside #shiny-modal satisfies the trap.
-            options   = list(
-              container   = "#shiny-modal",
-              customClass = "cc-ds-popover"))),
-        selectizeInput(
-          "sel_name",
-          "Taxa",
-          choices  = NULL,
-          multiple = TRUE,
-          width    = "100%" ),
-        checkboxInput(
-          "ck_children",
-          value = TRUE,
-          label = tooltip(
-            trigger = list(
-              "Include taxonomic children",
-              bs_icon("info-circle")),
-            "Include observations recorded at finer taxonomic levels, e.g.
-            include observations recorded to Genus and Species levels if Taxa
-            selected is at the higher level of Family; otherwise only show
-            observations to the given taxonomic level." ))),
-
-      nav_panel(
-        "Environmental", br(),
-        # No dataset picker here, deliberately: every environmental measurement
-        # type belongs to exactly one dataset, so the Variable list below is
-        # already grouped by source and a separate filter would say the same
-        # thing twice.
-        div(
-          class = "small text-muted mb-2",
-          sprintf(paste(
-            "Variables are grouped by the dataset they come from \u2014 %s.",
-            "Each measurement type belongs to exactly one, so choosing a",
-            "variable chooses its dataset."),
-            paste(dataset_label(d_env_datasets$dataset_key), collapse = ", "))),
-        selectInput(
-          "sel_env_var",
-          "Variable",
-          # grouped by dataset; `selected` is a measurement_type, not a label —
-          # it used to be "Temperature", which matched nothing and silently fell
-          # through to whatever happened to be first
-          choices  = env_var_choices(),
-          selected = env_var,
-          width    = "100%"),
-        checkboxInput(
-          "sel_env_all_vars",
-          tagList(
-            sprintf("Show all %d variables", nrow(d_env_vars)),
-            popover(
-              bs_icon("question-circle"),
-              "Off, the list shows the headline variables people usually plot.
-               On, it adds the instrument channels (transmissometer, ISUS
-               voltage, PAR reference), the pre-QC reported series, and the
-               averaged / corrected / per-replicate variants.")),
-          value = FALSE),
-        numericRangeInput(
-          "sel_depth_range",
-          "Depth Range (m)",
-          c(0, 212), # TODO: pull from data
-          width = "100%",
-          separator = " to ",
-          min = 0,
-          max = 512 )),
-
-      nav_panel(
-        "Temporal", br(),
-        selectInput(
-          "sel_qtr",
-          "Quarter",
-          c(Q1 = 1,
-            Q2 = 2,
-            Q3 = 3,
-            Q4 = 4),
-          selected = 1:4,
-          multiple = TRUE),
-        dateRangeInput(
-          "sel_date_range",
-          "Date Range",
-          startview = "year",
-          start = min_max_date[1],
-          end = min_max_date[2],
-          min = min_max_date[1],
-          max = min_max_date[2]) ),
-
-      nav_panel(
-        "Spatial",
-        br(),
-        "Select pre-defined zones by clicking on the map or table. Click selected zones again to deselect them. Alternatively, use the \"Custom\" category to drawn your own region of interest.",
-        selectInput(
-          "sel_places_cat",
-          tags$b("Category"),
-          selected = "CalCOFI Zones",
-          c(unique(cc_places$category), "Custom")),
-        fluidRow(
-          column(6, maplibreOutput("spatial_filter_map", height = "400px")),
-          column(6, DTOutput("tbl_places") )
-        )
-      ),
+    title = tagList("Layers", modal_x_btn()),
+    "Select pre-defined zones by clicking on the map or table (some categories are table-only -- see below). Click selected zones again to deselect them. Alternatively, use the \"Custom\" category to drawn your own region of interest.",
+    selectInput(
+      "sel_places_cat",
+      tags$b("Category"),
+      selected = "CalCOFI Zones",
+      # cc_places categories (clickable map + table), then every other
+      # spatial_layers.csv layer grouped by its registry group
+      # (table-only -- see global.R::sample_spatial_layers), then Custom.
+      places_cat_choices),
+    fluidRow(
+      column(6, maplibreOutput("spatial_filter_map", height = "400px")),
+      column(6, DTOutput("tbl_places") )
     ),
 
     footer = tagList(
-      modalButton("Cancel"),
-      input_task_button("submit", "Submit") ),
-
+      modalButton("Back"),
+      input_task_button("submit", "Apply") ),
 
     size = "xl",
     fade = FALSE
   )
+}
+
+#' Compact One-line Filter Chip Text
+#'
+#' The redesign's filter-chip row summary -- quarters, year range, depth and
+#' area from `modal_edit_filters()`, always all four, condensed to one line
+#' next to the "Edit filters" link (each value bold with a blue dot).
+#' Deliberately separate from `prep_filter_summary()`
+#' (which still drives the fuller sidebar "Filter Summary" accordion,
+#' taxa/variable included) rather than reusing it, so this stays a small,
+#' low-risk addition instead of a change to an already-relied-on function.
+#'
+#' @param sel_qtr integer vector of selected quarters
+#' @param sel_date_range length-2 Date vector
+#' @param sel_depth_range length-2 numeric vector (meters)
+#' @param sel_places character vector of selected zone/layer names (or NULL)
+#' @param is_custom TRUE if the active spatial filter is a drawn polygon
+#' @param date_bounds length-2 Date vector, the full available date range; a
+#'   date facet shows only when \code{sel_date_range} is inside these bounds
+#' @param depth_default length-2 numeric, the startup depth range; a depth
+#'   facet shows only when \code{sel_depth_range} differs from it
+#'
+#' @return a UI fragment: a \code{tagList} of \code{.cc-chip-facet} spans (one
+#'   per narrowed filter), or a single \code{.cc-chip-empty} span when nothing
+#'   is narrowed
+#'
+#' @export
+chip_summary_text <- function(sel_qtr, sel_date_range, sel_depth_range,
+                              sel_places = NULL, is_custom = FALSE,
+                              date_bounds = NULL, depth_default = c(0, 515)) {
+  # The chip always shows all four facets (quarters, years, depth, area) --
+  # same content as before, just each value bold with a blue dot
+  # (.cc-chip-facet). Kept deliberately simple/always-on rather than hiding
+  # defaults, so the chip reads the same on every session.
+  qtr_txt <- if (length(sel_qtr) >= 4 || length(sel_qtr) == 0) "Q1–Q4"
+             else paste0("Q", paste(sort(as.integer(sel_qtr)), collapse = ", "))
+
+  yr_txt <- sprintf(
+    "%s–%s",
+    format(as.Date(sel_date_range[1]), "%Y"),
+    format(as.Date(sel_date_range[2]), "%Y"))
+
+  depth_txt <- sprintf("%s–%s m", sel_depth_range[1], sel_depth_range[2])
+
+  loc_txt <- if (isTRUE(is_custom)) "Custom area"
+             else if (!is.null(sel_places) && length(sel_places) > 0)
+               sprintf("%d location%s", length(sel_places),
+                       if (length(sel_places) > 1) "s" else "")
+             else "All locations"
+
+  tagList(lapply(
+    c(qtr_txt, yr_txt, depth_txt, loc_txt),
+    function(f) tags$span(class = "cc-chip-facet", f)))
 }
 
 
@@ -2140,17 +2910,20 @@ modal_data <- function(env_var = "temperature", bio_ds = NULL) {
 #' @export
 modal_depth_profile <- function(map_sp) {
   modalDialog(
-    title = "Create Depth Profile",
+    title = tagList("Create Depth Profile", modal_x_btn()),
+    class = "cc-transect-modal",
 
-    p("Draw a line segment on the map to define your transect."),
+    div(class = "cc-transect-top",
+        p(class = "small text-muted mb-0",
+          "Draw a line segment on the map to define your transect."),
+        numericInput(
+          "modal_buffer_dist", "Buffer distance (km)",
+          value = 5, width = "160px")),
 
-    numericInput(
-      "modal_buffer_dist",
-      "Buffer Distance (km)",
-      value = 5
-    ),
-
-    maplibreOutput("transect_map", height = "500px"),
+    # a real px height so the widget's first render is sized; CSS
+    # (#shiny-modal:has(.cc-transect-modal) #transect_map) then clamps it to the
+    # viewport so the whole dialog fits with no scroll, centred vertically.
+    maplibreOutput("transect_map", height = "400px"),
 
     footer = tagList(
       modalButton("Cancel"),
@@ -3015,9 +3788,13 @@ sp_unit_summary <- function(df_sp) {
 #' @return a character legend title
 #' @export
 sp_value_label <- function(u) {
-  if (!nrow(u))        return("Avg. value")
+  # "abundance" names the quantity all these rows represent, answering
+  # "average of what?"; the "(mixed units)" caveat stays so a mean taken across
+  # e.g. count/10m2 and count/100m3 is not read as a single physical rate --
+  # the sidebar note still carries the per-unit breakdown.
+  if (!nrow(u))        return("Avg. abundance")
   if (nrow(u) == 1L)   return(paste0("Avg. ", u$cpue_unit[1]))
-  paste0("Avg. value (", nrow(u), " mixed units)")
+  "Avg. abundance (mixed units)"
 }
 
 # ---- ?datasets= : the taxa-dataset selection carried in the URL --------------

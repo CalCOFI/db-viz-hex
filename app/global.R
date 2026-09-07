@@ -144,7 +144,68 @@ agg_unit_choices <- c(
   split(d_summary_layers$layer, d_summary_layers$group) |>
     lapply(\(x) setNames(as.list(x), x)))
 
+# "Restrict map to area" choices: whole coast, then the same layer optgroups.
+# Picking one clips the hex map (and the plot/download tables) to that whole
+# layer's polygons -- it does NOT roll the data up per polygon (that stays
+# Summarize Within). Same list as agg_unit_choices minus the Hexagons entry.
+map_area_choices <- c(list("Whole coast" = "__all__"), agg_unit_choices[-1])
+
+# every polygon name for each summarizable layer -- so "restrict to <layer>"
+# can pass the full spatial_name set to sample_spatial_keys() / the h3t
+# sample_spatial clause (both need the names, not just the layer)
+summary_layer_names <- dbGetQuery(
+  con, "SELECT DISTINCT layer, spatial_name FROM sample_spatial") |>
+  (\(d) split(d$spatial_name, d$layer))()
+
 message("summarizable spatial layers: ", nrow(d_summary_layers))
+
+# Spatial-tab FILTER choices ----
+# calcofi4r::cc_places already gives its categories (CalCOFI Zones, National
+# Marine Sanctuaries, Integrated Ecosystem Assessment, BOEM Wind Planning
+# Areas, NOAA Aquaculture Opportunity Areas -- whichever load into this
+# release) a full interactive map + table picker, built from real sf polygon
+# geometry. Any d_summary_layers layer NOT already covered by a cc_places
+# category can still be filtered on -- no new geometry needed -- via the
+# SAME sample_spatial point-in-polygon membership table Summarize Within
+# already reads (functions.R::prep_sp_poly / prep_env_poly). Those get a
+# table-only picker (no polygon loaded to draw or click), grouped by the
+# registry's own `group` column and appended as additional optgroups after
+# the cc_places categories.
+#
+# This is what makes "layers" mean one consistent list across Map Layers,
+# Summarize Within, AND Spatial-tab filtering, per Ben Best's "layers in Map
+# and Plot are mostly equal, but Filter is not" -- cc_places is layered on
+# top only where it already has richer (clickable-map) geometry; every other
+# registered layer now filters too, just via a table.
+sample_spatial_layers <- d_summary_layers |>
+  filter(!layer %in% cc_places$category) |>
+  pull(layer)
+
+places_cat_choices <- c(
+  setNames(as.list(unique(cc_places$category)), unique(cc_places$category)),
+  d_summary_layers |>
+    filter(layer %in% sample_spatial_layers) |>
+    (\(d) split(d$layer, d$group))() |>
+    lapply(\(x) setNames(as.list(x), x)),
+  list(Custom = "Custom"))
+
+# Selectable names for a given sel_places_cat value, regardless of which
+# registry it came from -- lets output$tbl_places and the map/table click
+# handlers in server.R stay agnostic to the source.
+places_names_for <- function(cat) {
+  if (cat %in% sample_spatial_layers) {
+    dbGetQuery(
+      con,
+      "SELECT DISTINCT spatial_name AS name FROM sample_spatial WHERE layer = ? ORDER BY 1",
+      params = list(cat))
+  } else {
+    cc_places |>
+      as.data.frame() |>
+      filter(category == cat) |>
+      select(name) |>
+      arrange(name)
+  }
+}
 
 # load functions ----
 source(here("app/functions.R"))
@@ -217,6 +278,20 @@ h3t_release_of <- function(path) {
 # cannot drift there.
 DB_RELEASE  <- h3t_release_of(db_path)
 h3t_release <- Sys.getenv("CALCOFI_H3T_RELEASE", DB_RELEASE)
+
+# Feedback dialog (functions.R::modal_feedback + app/www/cc-feedback.js) posts
+# the note + screenshot CLIENT-SIDE to a Google Apps Script (generated once into
+# feedback/Code.gs by calcofi4r::cc_feedback_script(); setup in feedback/README.md)
+# that writes a Sheet row, saves the screenshot to Drive, mails the recipients
+# tab and files a public issue in CalCOFI/db-viz-hex without the email. Empty
+# (local dev, or not set up yet) -> the dialog offers only the "open a GitHub
+# issue myself" fallback.
+#
+# .Renviron does not take on the server (see CALCOFI_LOG_URL above), so the
+# deployed /exec URL is pinned here once the Apps Script web app is live.
+if (!debug && !nzchar(Sys.getenv("CALCOFI_FEEDBACK_URL")))
+  Sys.setenv(CALCOFI_FEEDBACK_URL = "https://script.google.com/macros/s/AKfycbyAYs_NFEuSByP4xu_3KZwiUs2eU0d4tCtj0AMpF3lBz9pwu3QDVPW59T4jOAK52ZwjiQ/exec")
+FEEDBACK_URL <- Sys.getenv("CALCOFI_FEEDBACK_URL", "")
 if (!nzchar(h3t_release))
   warning("could not derive H3T_RELEASE from ", db_path,
           " — tile URLs will not be release-tagged, so Varnish may serve stale tiles")
@@ -497,6 +572,36 @@ d_bio_datasets <- dbGetQuery(
   mutate(label = sprintf("%s — %s obs, %d taxa",
                          ds_name, format(n_obs, big.mark = ","), n_taxa))
 
+# Coarse taxa-dataset groups for the Filters panel's "Datasets" tree
+# (functions.R::dataset_category_tree_ui()) — the redesign groups the 10
+# datasets into 4 everyday categories (Fish / Crustaceans / Plankton /
+# Birds & Mammals) instead of listing them flat, per the approved mockup.
+# This is a DISPLAY grouping only: `sel_bio_ds` still stores individual
+# dataset_key values exactly as it always has, so nothing downstream of it
+# (get_sp(), the SQL builders) needs to know these categories exist.
+#
+# Curated the same defensive way as DATASET_LABELS above: a dataset this map
+# doesn't recognize falls back to "Other" rather than erroring, so a newly
+# ingested dataset still renders (just uncategorized) instead of breaking
+# the Filters panel.
+BIO_DATASET_CATEGORY <- c(
+  "swfsc_ichthyo"          = "Fish",
+  "swfsc_cufes"            = "Fish",
+  "sio_mesopelagic-fish"   = "Fish",
+  "cce-lter_euphausiids"   = "Crustaceans",
+  "calcofi_phyllosoma"     = "Crustaceans",
+  "cdfw_dungeness-crab"    = "Crustaceans",
+  "calcofi_phytoplankton"  = "Plankton",
+  "cce-lter_zooscan"       = "Plankton",
+  "cce-lter_zoodb"         = "Plankton",
+  "farallon_bird-mammal"   = "Birds & Mammals")
+
+d_bio_datasets <- d_bio_datasets |>
+  mutate(category = ifelse(
+    dataset_key %in% names(BIO_DATASET_CATEGORY),
+    unname(BIO_DATASET_CATEGORY[dataset_key]),
+    "Other"))
+
 # Both pickers are MEASURED from the release, never listed here: a dataset with
 # `realm = 'bio'` observations reaches the Taxa tab and one with `realm = 'env'`
 # reaches the Environmental tab by having been ingested, with no app-side edit.
@@ -544,6 +649,43 @@ sp_names_for <- function(datasets = NULL) {
   sort(d_sp$name[d_sp$scientific_name %in% sci])
 }
 
+#' Grouped choices for the Taxa picker, one optgroup per dataset
+#'
+#' Mirrors env_var_choices()'s optgroup pattern below, applied to taxa: the
+#' Environmental tab already appends the source dataset to a variable's label
+#' ("Water temperature (QC'd) — Hydrographic Bottle"); this does the same for
+#' taxa ("Pacific sardine (pilchard) (species: Sardinops sagax) — CalCOFI
+#' Ichthyoplankton"), so a taxon's origin is visible without opening the
+#' Datasets popover.
+#'
+#' A taxon observed in more than one dataset (d_taxa_ds is many-to-many, e.g.
+#' Sardinops sagax appears in both net-tow and CUFES datasets) appears once per
+#' dataset group, each with its own label — selectize's `choices` allows
+#' repeated VALUES under different group labels; get_sp() filters on the plain
+#' taxon name regardless of which group it was picked from, so this is purely
+#' a display aid, not a new selection semantics.
+#'
+#' @param datasets character vector of dataset_key to include (NULL = all)
+#' @return named list of named lists, one group per dataset (selectize optgroups)
+sp_choices <- function(datasets = NULL) {
+  ds <- d_taxa_ds
+  if (!is.null(datasets) && length(datasets) > 0)
+    ds <- ds[ds$dataset_key %in% datasets, ]
+  if (nrow(ds) == 0) return(list())
+
+  d <- merge(ds, d_sp, by = "scientific_name")
+  d <- d[!is.na(d$name), ]
+
+  # keep dataset groups in the same order as the Datasets checkboxes
+  keys <- d_bio_datasets$dataset_key[d_bio_datasets$dataset_key %in% unique(d$dataset_key)]
+  out <- lapply(keys, function(k) {
+    x <- d[d$dataset_key == k, ]
+    x <- x[order(x$name), ]
+    setNames(as.list(x$name), paste0(x$name, " — ", dataset_label(k)))
+  })
+  setNames(out, dataset_label(keys))
+}
+
 env_stat_choices <- list(
   "Avg." = "mean",
   "Max" = "max",
@@ -580,10 +722,15 @@ tour <- Conductor$new(
     )
   )
 )$step(
-  el = "#sel_data",
+  # was "#sel_data", the old sidebar's "Select Filters" button -- that
+  # sidebar is gone (app/ui.R's redesign moved Species/Taxa + Compare
+  # Environmental Variable into this always-visible top bar, with
+  # everything else behind "Edit filters" beneath it).
+  el = ".cc-topbar",
   title = "Select Filters",
-  text = "You can change the species and environmental selection here, along with
-    temporal and spatial constraints.",
+  text = "Search a species or taxon here, and toggle on Compare Environmental
+    Variable to overlay a matching environmental layer. Temporal, depth and
+    spatial constraints are one click away via \"Edit filters\" below.",
   buttons = list(
     list(
       action = "back",

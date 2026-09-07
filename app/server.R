@@ -36,6 +36,23 @@ server <- function(input, output, session) {
   # this covers About and Download as well as the four visualization panels)
   observeEvent(input$outputPanel, trk("select_tab", tab = input$outputPanel),
                ignoreInit = TRUE)
+  # "+ Add a variable to compare" (env card, OFF state) -> flick the switch on;
+  # the switch is then the way back off. cmp_env_toggle stays the source of truth.
+  observeEvent(input$add_env_var,
+    update_switch("cmp_env_toggle", value = TRUE),
+    ignoreInit = TRUE)
+
+  # remember the last visualization tab so the About page's "Close" (X) can
+  # return to whatever the user was looking at
+  observeEvent(input$outputPanel, {
+    if (input$outputPanel %in%
+        c("Map", "Time Series", "Scatterplot", "Depth Profile"))
+      rx$last_viz_tab <- input$outputPanel
+  })
+  observeEvent(
+    input$close_about,
+    nav_select("outputPanel", rx$last_viz_tab %||% "Map", session = session),
+    ignoreInit = TRUE)
   # hexagons vs a named boundary layer — which layers people actually summarize
   # within is the signal for whether more are worth adding to the registry
   observeEvent(input$sel_agg_unit,
@@ -46,9 +63,17 @@ server <- function(input, output, session) {
 
   # the two modals that gate everything else — a high open_filters count with
   # few filter_submit rows means people are bouncing off the filter dialog.
-  observeEvent(input$sel_data,            trk("open_filters"),   ignoreInit = TRUE)
-  observeEvent(input$btn_layers,          trk("open_layers"),    ignoreInit = TRUE)
+  observeEvent(input$edit_filters,        trk("open_filters"),   ignoreInit = TRUE)
+  observeEvent(input$edit_spatial,        trk("open_spatial"),   ignoreInit = TRUE)
   observeEvent(input$open_transect_modal, trk("open_transect"),  ignoreInit = TRUE)
+
+  # feedback: the navbar item opens the modal; sending is client-side (the
+  # CCFeedback script in ui.R posts to FEEDBACK_URL), so there is no submit
+  # handler here -- just open it and log the open.
+  observeEvent(input$open_feedback, {
+    trk("open_feedback")
+    showModal(modal_feedback(DB_RELEASE, FEEDBACK_URL))
+  }, ignoreInit = TRUE)
 
   # tour ----
   # launch the guided tour on load, unless suppressed with ?tour=off in the URL
@@ -75,7 +100,15 @@ server <- function(input, output, session) {
     env_hex_list   = NULL,  # cached env hex list for first map render
     env_var        = NULL,  # stores the env_var code (e.g., "temperature")
     lbl_env_var    = NULL,  # stores the label (e.g., "Temperature (ºC)")
-    sel_zones      = NULL,
+    # names selected within input$sel_places_cat's active category -- any
+    # cc_places category (CalCOFI Zones, BOEM Wind Planning Areas, etc.) OR
+    # any table-only spatial_layers.csv layer (global.R::sample_spatial_layers)
+    # -- all share this one picker. Written by the spatial_filter_map /
+    # tbl_places click handlers below. Was named `sel_zones` and read against
+    # cc_grid_zones$zone_key at submit, but never assigned by anything -- that
+    # mismatch is what made the Spatial tab's filter silently a no-op; see the
+    # submit handler.
+    sel_places     = NULL,
     map_sp         = NULL,
     sp_scale       = NULL,  # scale list for sp map
     env_scale      = NULL,  # scale list for env map
@@ -93,16 +126,23 @@ server <- function(input, output, session) {
     # rebuilt the widget in hex mode on the same flush.
     agg_unit       = "hex",
     env_stat       = "mean",
-    # WKT of the active spatial filter (drawn polygon or grid zones), NULL for
-    # none — the h3t tile SQL needs it, and it is part of the env tile cache key
+    # WKT of the active spatial filter (drawn polygon or a cc_places zone
+    # selection), NULL for none — the h3t tile SQL needs it, and it is part of
+    # the env tile cache key
     spatial_wkt    = NULL,
+    # sample_spatial-backed filter (table-only categories, no WKT) — layer name
+    # + selected spatial_name values. Mutually exclusive with spatial_wkt;
+    # also part of the h3t tile cache key, so a table-only spatial filter
+    # doesn't leave the map showing unfiltered tiles beside filtered plots.
+    spatial_layer  = NULL,
+    spatial_names  = NULL,
     env_tile_key   = NULL,  # hash of the filters the env tile URL was built from
     params = list( # filter/analysis params
       taxa             = default_sp_name,
       env_var          = "temperature",
       quarters         = 1:4,
       date_range       = min_max_date,
-      depth_range      = c(0, 212),
+      depth_range      = c(0, 515),
       include_children = TRUE,
       zones            = NULL,
       time_window      = NULL,
@@ -131,15 +171,17 @@ server <- function(input, output, session) {
 
   sp_map_spec <- function(df_sp, sel_name, sel_qtr, sel_date_range,
                           ck_children, datasets = NULL, poly_wkt = NULL,
+                          spatial_layer = NULL, spatial_names = NULL,
                           is_dark = TRUE) {
     if (USE_H3T) {
       # Resolve taxa HERE and hand the taxon_keys to the SQL builder, so the
       # tiles filter on exactly what get_sp() filtered on — same children walk
       # (ITIS for birds, WoRMS otherwise), same dataset checkboxes, same
-      # spatial filter.
+      # spatial filter (WKT polygon, or a table-only sample_spatial layer).
       ids   <- resolve_sp_ids(sel_name, ck_children)
       sql   <- build_sp_sql(ids$taxon_keys, sel_qtr, sel_date_range,
-                            datasets = datasets, poly_wkt = poly_wkt)
+                            datasets = datasets, poly_wkt = poly_wkt,
+                            spatial_layer = spatial_layer, spatial_names = spatial_names)
       stats <- fetch_h3t_stats(sql, H3T_RELEASE)
       if (debug) { message("sp stats:"); print(stats) }
       scale <- build_h3t_scale(stats, palette = \(n) hcl.colors(n, palette = "Viridis"))
@@ -162,9 +204,11 @@ server <- function(input, output, session) {
   # output$map (it needs the stat/variable labels), so this returns the two
   # pieces that depend on the filters rather than a finished map.
   env_tile_spec <- function(env_var, sel_qtr, sel_date_range, sel_depth_range,
-                            env_stat, poly_wkt = NULL) {
+                            env_stat, poly_wkt = NULL,
+                            spatial_layer = NULL, spatial_names = NULL) {
     sql   <- build_env_sql(env_var, sel_qtr, sel_date_range, sel_depth_range,
-                           stat = env_stat, poly_wkt = poly_wkt)
+                           stat = env_stat, poly_wkt = poly_wkt,
+                           spatial_layer = spatial_layer, spatial_names = spatial_names)
     stats <- fetch_h3t_stats(sql, H3T_RELEASE)
     if (debug) { message("env stats:"); print(stats) }
     scale <- build_h3t_scale(stats, palette = \(n) rev(hcl.colors(n, palette = "Spectral")))
@@ -178,7 +222,8 @@ server <- function(input, output, session) {
   # legend while the tiles kept showing the old one, with nothing to see it by.
   env_tile_key <- function(env_stat) rlang::hash(list(
     rx$env_var, rx$params$sel_qtr, rx$params$date_range,
-    rx$params$depth_range, env_stat, rx$spatial_wkt))
+    rx$params$depth_range, env_stat, rx$spatial_wkt,
+    rx$spatial_layer, rx$spatial_names))
 
   # ── ?datasets= : open on one dataset (or several) ------------------------
   # A calcofi.io dataset page links here, and the link could only open the app
@@ -234,7 +279,7 @@ server <- function(input, output, session) {
       sel_env_var     <- "temperature"
       sel_qtr         <- 1:4
       sel_date_range  <- min_max_date
-      sel_depth_range <- c(0, 212)
+      sel_depth_range <- c(0, 515)
       ck_children     <- TRUE
       env_stat        <- "mean"
 
@@ -269,7 +314,7 @@ server <- function(input, output, session) {
         rx$env_scale_single <- env$scale
         rx$env_scale        <- rep(list(env$scale), length(res_range))
 
-        rx$summary_stats <- prep_summary_stats(df_sp, df_env)
+        rx$summary_stats <- prep_summary_stats(df_sp, df_env, env_var_label(sel_env_var))
 
       } else {
         # classic path: 10-resolution sf preload (with RDS cache)
@@ -290,7 +335,7 @@ server <- function(input, output, session) {
           }
           sp_hex_list   <- prep_sp_hex(df_sp, res_range)
           env_hex_list  <- prep_env_hex(df_env, res_range, env_stat)
-          summary_stats <- prep_summary_stats(df_sp, df_env)
+          summary_stats <- prep_summary_stats(df_sp, df_env, env_var_label(sel_env_var))
           save_cache(cache_dir, db_path, sp_hex_list, env_hex_list, summary_stats)
         }
 
@@ -323,6 +368,13 @@ server <- function(input, output, session) {
       rx$params$depth_range <- sel_depth_range
       rx$params$ck_children <- ck_children
 
+      # Make the default taxon visibly selected in the search box. The server
+      # loads its data regardless, but a viewer who lands on the app and sees
+      # only "Search species / taxa..." has no idea what the hexagons are --
+      # and they are gone in 30-90 s. The observeEvent(input$sel_name) above
+      # no-ops on this because rx$params$taxa already equals it.
+      updateSelectizeInput(session, "sel_name", selected = sel_name)
+
       # stamp the key AFTER rx$params is populated (it hashes those fields), so
       # output$map reuses the tile URL just fetched instead of fetching it again
       if (USE_H3T) rx$env_tile_key <- env_tile_key(env_stat)
@@ -333,8 +385,15 @@ server <- function(input, output, session) {
       # 2026-09-06, after the UI-E deploy)
       rx$filter_summary <- prep_filter_summary(
         sel_name, sel_env_var, sel_qtr, sel_date_range,
-        sel_depth_range, drawn_polygon = NULL, rx$sel_zones, ck_children,
+        sel_depth_range, drawn_polygon = NULL, rx$sel_places, ck_children,
         bio_datasets = sel_bio_ds)
+
+      # top-bar filter chip (functions.R::chip_summary_text()) -- same fields
+      # as rx$filter_summary above, condensed to the one line shown next to
+      # "Edit filters"
+      rx$chip_summary <- chip_summary_text(
+        sel_qtr, sel_date_range, sel_depth_range, sel_places = rx$sel_places,
+        date_bounds = min_max_date)
 
       rx$plot_depth <- NULL
 
@@ -356,7 +415,7 @@ server <- function(input, output, session) {
     if (is.null(rx$df_sp)) {
       ui_placeholder(
         "No Data Selected",
-        "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
+        "Choose a species in Species / Taxa above to begin exploring CalCOFI data."
       )
     } else {
       highchartOutput("ts_plot", height = "100%")
@@ -368,7 +427,7 @@ server <- function(input, output, session) {
     if (is.null(rx$df_sp)) {
       ui_placeholder(
         "No Data Selected",
-        "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
+        "Choose a species in Species / Taxa above to begin exploring CalCOFI data."
       )
     } else {
       plotlyOutput("splot", height = "100%")
@@ -380,12 +439,12 @@ server <- function(input, output, session) {
     if (is.null(rx$df_sp)) {
       ui_placeholder(
         "No Data Selected",
-        "Click 'Data Selection' in the sidebar to begin exploring CalCOFI data."
+        "Choose a species in Species / Taxa above to begin exploring CalCOFI data."
       )
     } else if (is.null(rx$plot_depth)) {
       ui_placeholder(
         "No Depth Profile Generated",
-        "Click 'Draw Transect' in the sidebar to create a depth profile."
+        "Click 'Draw Transect' above to create a depth profile."
       )
     } else {
       plotlyOutput("dprof_plot", height = "100%")
@@ -432,6 +491,12 @@ server <- function(input, output, session) {
 
   output$map <- renderMaplibreCompare({
     map_rebuild()
+    # 3rd (and final) non-isolated dependency: the compare layout. Unlike the
+    # env-stat trap the "EXACTLY TWO dependencies" note guards against, cmp_mode
+    # only ever changes on an explicit user toggle of Compare / Split-Swipe --
+    # never mid polygon-summary -- so re-rendering on it is safe and is exactly
+    # what a layout switch needs.
+    cmp_mode <- rx$cmp_mode %||% "swipe"
     req(map_ready())
 
     isolate({
@@ -442,6 +507,11 @@ server <- function(input, output, session) {
 
     env_stat       <- isolate(input$sel_env_stat) %||% "mean"
     env_stat_label <- names(which(env_stat_choices == env_stat))
+
+    # cmp_mode was read (non-isolated) at the top of this render. "sync" = two
+    # synced maps side by side, "swipe" = the draggable divider. compare()
+    # keeps the same elementId and before/after sides in both modes, so every
+    # maplibre_compare_proxy() call is unaffected.
 
     # The aggregation unit is read WITHOUT taking a reactive dependency: the
     # polygon summary is applied to the live maps by `apply_poly()` below,
@@ -474,7 +544,8 @@ server <- function(input, output, session) {
         env <- env_tile_spec(
           rx$env_var,
           isolate(rx$params$sel_qtr), isolate(rx$params$date_range),
-          isolate(rx$params$depth_range), env_stat, rx$spatial_wkt)
+          isolate(rx$params$depth_range), env_stat, rx$spatial_wkt,
+          spatial_layer = rx$spatial_layer, spatial_names = rx$spatial_names)
         rx$env_tile_url     <- env$tile_url
         rx$env_scale_single <- env$scale
         rx$env_scale        <- rep(list(env$scale), length(res_range))
@@ -489,7 +560,7 @@ server <- function(input, output, session) {
       # exactly those and no others — set_layout_property is NOT guarded against
       # a missing layer on the client, it throws
       rx$env_layer_ids <- "env"
-      return(compare(rx$map_sp, map_env_obj, elementId = "map"))
+      return(compare(rx$map_sp, map_env_obj, elementId = "map", mode = cmp_mode))
     }
 
 
@@ -523,9 +594,44 @@ server <- function(input, output, session) {
       message("map_env_obj class: ", paste(class(map_env_obj), collapse = ", "))
     }
 
-    compare(rx$map_sp, map_env_obj, elementId = "map")
+    compare(rx$map_sp, map_env_obj, elementId = "map", mode = cmp_mode)
 
     })  # isolate
+  })
+
+  # Compare-widget mode:
+  #   * Compare OFF                 -> "swipe" (single map: the divider is
+  #     hidden and the left map un-clipped by CSS -- no sync machinery, so
+  #     pan/zoom is a plain single map)
+  #   * Compare ON, Split (default) -> "sync": two synced side-by-side panes
+  #   * Compare ON, Swipe           -> "swipe": the draggable divider
+  # output$map takes a direct (non-isolated) dependency on rx$cmp_mode, so
+  # setting it re-renders the widget -- no extra map_rebuild() bump (which
+  # previously raced two compare() widgets into #map, "Source ... already
+  # exists").
+  rx$cmp_mode <- "swipe"
+  observeEvent(list(input$cmp_env_toggle, input$cmp_layout), {
+    rx$cmp_mode <- if (isTRUE(input$cmp_env_toggle) &&
+                       !identical(input$cmp_layout %||% "split", "swipe"))
+      "sync" else "swipe"
+  }, ignoreInit = TRUE)
+
+  # one-shot "align the two synced maps" latch -- see input$map_before_view.
+  # Cleared on every widget rebuild so a fresh compare() re-aligns once.
+  cmp_synced <- reactiveVal(FALSE)
+  observeEvent(map_rebuild(), { cmp_synced(FALSE) }, ignoreInit = TRUE)
+
+  # per-pane header labels for the side-by-side layout (ui.R's #map_title_sp /
+  # #map_title_env, shown only when cmp_layout == "split"). The species name is
+  # trimmed to its common name -- "Pacific sardine (pilchard) (species:
+  # Sardinops sagax)" -> "Pacific sardine (pilchard)" -- dropping only the
+  # parenthetical rank/scientific-name tail prep_db bakes in.
+  output$map_title_sp <- renderText({
+    nm <- rx$params$taxa %||% ""
+    sprintf("Species — %s", sub("\\s*\\(species:.*$", "", nm))
+  })
+  output$map_title_env <- renderText({
+    sprintf("Environmental — %s", rx$lbl_env_var %||% "")
   })
 
   # summarize within polygons ----
@@ -556,9 +662,18 @@ server <- function(input, output, session) {
   # `message.layer_id`), which is why the hexagons stayed put underneath the
   # first polygon summary and a second switch would have thrown "Layer with id
   # sp_poly already exists". Needs mapgl >= that commit.
+  # mapgl 0.5.0's clear_layer() sends `{layer: id}` for a compare proxy, but the
+  # maplibregl_compare.js "remove_layer" handler reads `message.layer_id` -- so
+  # clear_layer() is a silent no-op and the hexes stayed under the polygon
+  # summary. Send the message ourselves with BOTH keys.
   remove_layers <- function(side, ids) {
     p <- maplibre_compare_proxy("map", map_side = side)
-    for (id in ids) p <- p |> clear_layer(id)
+    for (id in ids) {
+      session$sendCustomMessage("maplibre-compare-proxy", list(
+        id = p$id,
+        message = list(type = "remove_layer",
+                       layer = id, layer_id = id, map = side)))
+    }
     invisible(p)
   }
 
@@ -747,71 +862,63 @@ server <- function(input, output, session) {
     else apply_poly(agg_unit, input$sel_env_stat %||% "mean")
   }, ignoreInit = TRUE)
 
-  # dark_toggle -> map.style ----
+  # dark_toggle -> rebuild the map in the new theme ----
+  # set_style() on the live compare proxy re-themed the basemap but wiped every
+  # added source/layer (hexes, boundaries) without re-adding them, and only the
+  # env pane re-rendered afterwards -- so light mode left the species pane on a
+  # dark basemap. The species widget bakes its basemap style in at build time,
+  # so the fix is to rebuild it and re-render both panes.
   observeEvent(input$dark_toggle, {
-    style  <- ifelse(
-      input$dark_toggle == "dark",
-      "dark-matter",
-      "voyager")
+    is_dark <- input$dark_toggle == "dark"
+    agg     <- isolate(input$sel_agg_unit) %||% "hex"
 
-    if (debug)
-      message("maplibre_compare_proxy -> set_style: ", style)
+    # polygon-summary mode: apply_poly() rebuilds both sides with the theme
+    if (!identical(agg, "hex")) {
+      apply_poly(agg, isolate(input$sel_env_stat) %||% "mean")
+      return(invisible(NULL))
+    }
 
-    maplibre_compare_proxy("map", map_side = "before") |>
-      set_style(carto_style(style))
-
-    maplibre_compare_proxy("map", map_side = "after") |>
-      set_style(carto_style(style))
-  })
+    p <- rx$params
+    if (!is.null(rx$df_sp) && !is.null(p$taxa)) {
+      spec <- sp_map_spec(
+        rx$df_sp, p$taxa,
+        p$sel_qtr %||% 1:4, p$date_range %||% min_max_date, p$ck_children %||% TRUE,
+        datasets      = isolate(input$sel_bio_ds),
+        poly_wkt      = rx$spatial_wkt,
+        spatial_layer = rx$spatial_layer, spatial_names = rx$spatial_names,
+        is_dark       = is_dark)
+      rx$map_sp       <- spec$map
+      rx$sp_layer_ids <- spec$layer_ids
+      rx$sp_scale     <- spec$scales
+    }
+    map_rebuild(map_rebuild() + 1)
+  }, ignoreInit = TRUE)
 
   # map layers modal ----
-  # track which spatial layers are enabled
+  # "Map Layers" is a chip-row button (input$open_map_layers) opening a rich
+  # thumbnail modal (functions.R::modal_map_layers()). The grouped checkboxes
+  # keep their ids (lyr_<make.names(group)>); Apply (btn_layers_apply) commits
+  # the selection to rx$spatial_visible and the map.
   rx$spatial_visible <- d_spatial_layers |>
     filter(default_visible) |>
     pull(dataset_id)
 
-  observeEvent(input$btn_layers, {
-    # build checkbox groups from registry
-    layer_choices <- split(
-      setNames(d_spatial_layers$dataset_id, d_spatial_layers$layer),
-      d_spatial_layers$group)
+  layer_grp_ids <- paste0("lyr_", make.names(unique(d_spatial_layers$group)))
 
-    grp_names <- names(layer_choices)
-    n         <- length(grp_names)
-    mid       <- ceiling(n / 2)
+  observeEvent(input$open_map_layers, {
+    trk("open_layers")
+    showModal(modal_map_layers())
+  }, ignoreInit = TRUE)
 
-    make_col <- function(grps) {
-      tagList(lapply(grps, function(grp) {
-        input_id <- paste0("lyr_", make.names(grp))
-        checkboxGroupInput(
-          input_id,
-          grp,
-          choices  = layer_choices[[grp]],
-          selected = intersect(
-            rx$spatial_visible,
-            layer_choices[[grp]]))
-      }))
-    }
-
-    showModal(modalDialog(
-      title = "Map Layers",
-      size  = "l",
-      fluidRow(
-        column(6, make_col(grp_names[1:mid])),
-        column(6, make_col(grp_names[(mid + 1):n]))),
-      footer = tagList(
-        actionButton("btn_layers_apply", "Apply", class = "btn-primary"),
-        modalButton("Cancel"))
-    ))
+  # modal footer counter -- live over the checkbox inputs themselves
+  output$n_layers_selected <- renderText({
+    n_sel <- length(unlist(lapply(layer_grp_ids, function(id) input[[id]])))
+    sprintf("%d of %d layers selected", n_sel, nrow(d_spatial_layers))
   })
 
   observeEvent(input$btn_layers_apply, {
     # collect selected layer IDs from all checkbox groups
-    all_groups <- unique(d_spatial_layers$group)
-    selected   <- unlist(lapply(all_groups, function(grp) {
-      input_id <- paste0("lyr_", make.names(grp))
-      input[[input_id]]
-    }))
+    selected <- unlist(lapply(layer_grp_ids, function(id) input[[id]]))
     if (is.null(selected)) selected <- character(0)
 
     rx$spatial_visible <- selected
@@ -847,7 +954,13 @@ server <- function(input, output, session) {
     # toggle dies half-applied. The ids come from what was actually added to
     # each map (h3t: "sp"/"env"; classic: sp1..sp10 / env1..env10), not from a
     # hardcoded classic-path guess.
-    for (side in c("before", "after")) {
+    #
+    # Only the "after" side when Compare is ON: with it off the env pane has no
+    # data layer, so rebuilding its control against rx$env_layer_ids ("env")
+    # throws "non-existing layer env" on the client. The pane is hidden then
+    # anyway and rebuilt fresh when Compare is toggled on.
+    sides <- if (isTRUE(input$cmp_env_toggle)) c("before", "after") else "before"
+    for (side in sides) {
       ctrl <- build_layers_control(
         selected, d_spatial_layers,
         if (side == "before") rx$sp_layer_ids else rx$env_layer_ids)
@@ -860,8 +973,51 @@ server <- function(input, output, session) {
           margin_right = 45)
     }
 
+    # Re-assert the hex/data layers as visible. Rebuilding the layers control
+    # (clear + add) can leave the "Hexagon Data" toggle rendering unchecked and
+    # the layer hidden -- so a boundary layer toggle read as "hexes vanished".
+    # Same `sides` guard as the control rebuild (the after/env layer only
+    # exists when Compare is on).
+    for (side in sides) {
+      ids <- if (side == "before") rx$sp_layer_ids else rx$env_layer_ids
+      for (lid in ids)
+        maplibre_compare_proxy("map", map_side = side) |>
+          set_layout_property(lid, "visibility", "visible")
+    }
+
     removeModal()
-  })
+  }, ignoreInit = TRUE)
+
+  # Push the two colour-scale ranges + labels to the cross-pane hover readout
+  # (ui.R's cc_hexrange handler). Called on map move (with the live zoom's
+  # scale interval) AND whenever the env variable / stat / species-value label
+  # changes without a map move -- otherwise the readout keeps naming the old
+  # variable ("Avg. Temperature") after a switch to pH until you next pan.
+  push_hexrange <- function(i = NULL) {
+    if (is.null(i)) {
+      z <- isolate(input$map_before_view$zoom)
+      i <- if (is.null(z) || !is.finite(z)) 1L
+           else findInterval(z, zoom_breaks, rightmost.closed = TRUE)
+    }
+    sp_scales  <- rx$sp_scale
+    env_scales <- rx$env_scale
+    if (is.null(sp_scales) && is.null(env_scales)) return(invisible())
+    at <- function(l) if (is.null(l)) NULL else l[[max(1L, min(i, length(l)))]]
+    sp_scale  <- at(sp_scales)
+    env_scale <- at(env_scales)
+    env_stat     <- isolate(input$sel_env_stat) %||% "mean"
+    lbl_env_stat <- names(which(env_stat_choices == env_stat))
+    session$sendCustomMessage("cc_hexrange", list(
+      sp        = if (!is.null(sp_scale))  as.numeric(range(sp_scale$breaks))  else NULL,
+      env       = if (!is.null(env_scale)) as.numeric(range(env_scale$breaks)) else NULL,
+      sp_label  = rx$lbl_sp_value %||% "Species",
+      env_label = trimws(paste(lbl_env_stat, rx$lbl_env_var))))
+  }
+
+  observeEvent(
+    list(rx$lbl_env_var, rx$lbl_sp_value, rx$sp_scale, rx$env_scale,
+         input$sel_env_stat),
+    push_hexrange(), ignoreInit = TRUE)
 
   # map zoom ----
   observeEvent(input$map_before_view, {
@@ -869,6 +1025,19 @@ server <- function(input, output, session) {
 
     view <- input$map_before_view
     req(view$zoom)
+
+    # Side-by-side ("sync") layout: mapgl only locks the two maps together once
+    # one of them MOVES. On first load each fit_bounds'd its own container, which
+    # can leave them at slightly different zooms -- align them ONCE, right after
+    # the widget loads. Never on later moveends: doing it every time fought the
+    # user's pan/zoom (jump_to -> moveend -> jump_to ... a sync loop that froze
+    # the map). cmp_synced is reset by the map_rebuild observer below.
+    if (identical(rx$cmp_mode, "sync") && !cmp_synced() &&
+        length(view$center) == 2 && is.finite(view$zoom)) {
+      cmp_synced(TRUE)
+      maplibre_compare_proxy("map", map_side = "after") |>
+        jump_to(center = view$center, zoom = view$zoom)
+    }
 
     z <- view$zoom
     i <- findInterval(z, zoom_breaks, rightmost.closed = TRUE)
@@ -882,6 +1051,23 @@ server <- function(input, output, session) {
     env_stat <- input$sel_env_stat %||% "mean"
     lbl_env_stat <- names(which(env_stat_choices == env_stat))
 
+    # legend as a near-opaque themed card -- the old 50%-white wash was
+    # unreadable over the hexagons underneath, especially in light mode
+    lg_dark  <- isTRUE(tryCatch(calcofi4r::cc_is_dark(input), error = function(e) FALSE))
+    lg_style <- legend_style(
+      background_color   = if (lg_dark) "#1d1f21" else "#ffffff",
+      background_opacity = 0.94,
+      text_color         = if (lg_dark) "#dee2e6" else "#212529",
+      title_color        = if (lg_dark) "#dee2e6" else "#212529",
+      border_color       = if (lg_dark) "#3a4045" else "#d1dae3",
+      border_width       = 1,
+      border_radius      = 8,
+      # a genuinely compact legend -- smaller type + tighter padding, not just
+      # a narrower box
+      title_size         = 11,
+      text_size          = 9,
+      padding            = 6)
+
     # Species legend (left / before)
     # In hex mode the title is unit-free: CPUE is count/10m² for oblique and
     # vertical tows but count/100m³ for manta, and the hexagon value averages
@@ -892,14 +1078,14 @@ server <- function(input, output, session) {
     if (!is.null(sp_scale)) {
       maplibre_compare_proxy("map", map_side = "before") |>
         add_legend(
-          legend_title = rx$lbl_sp_value %||% "Avg. CPUE",
+          legend_title = rx$lbl_sp_value %||% "Avg. abundance",
           values       = round(sp_scale$breaks, 2),
           colors       = sp_scale$colors,
           type         = "continuous",
           position     = "bottom-left",
-          width        = "275px",
+          width        = "230px",
           target       = "compare",
-          style        = legend_style(background_opacity = 0.5),
+          style        = lg_style,
           add          = FALSE
         )
     }
@@ -913,12 +1099,17 @@ server <- function(input, output, session) {
           colors       = env_scale$colors,
           type         = "continuous",
           position     = "bottom-right",
-          width        = "275px",
+          width        = "230px",
           target       = "compare",
-          style        = legend_style(background_opacity = 0.5),
+          style        = lg_style,
           add         = TRUE
         )
     }
+
+    # hand the two value ranges + labels to the cross-pane hover readout
+    # (ui.R script): raw abundance and raw degrees C are not comparable, but
+    # "72% of the way up its own colour scale" vs "28% up its own" is.
+    push_hexrange(i)
   })
 
   # poly_note ----
@@ -942,27 +1133,33 @@ server <- function(input, output, session) {
       u <- rx$sp_units
       if (is.null(u) || !nrow(u)) return(NULL)
       n_tot <- sum(u$n)
-      return(div(
-        class = "small text-muted mb-3",
-        if (nrow(u) > 1) div(
-          class = "fw-semibold",
-          sprintf("Heads up: this selection mixes %d units, and the hexagon value averages across them.",
-                  nrow(u))),
-        div(
-          class = "mt-1",
-          lapply(seq_len(nrow(u)), function(i) div(
-            sprintf("%s — %s obs (%.0f%%), %s",
-                    u$cpue_unit[i], format(u$n[i], big.mark = ","),
-                    100 * u$n[i] / n_tot,
-                    if (isTRUE(u$standardized[i]))
-                      "standardized by tow effort"
-                    else "as published by the source, not effort-standardized")))),
+
+      # one unit -> a quiet one-liner. more than one -> a real callout, because
+      # the hexagon value is then an average across incompatible quantities.
+      if (nrow(u) <= 1) {
+        return(div(
+          class = "cc-unit-note",
+          sprintf("Hexagon values: average %s%s.", u$cpue_unit[1],
+                  if (isTRUE(u$standardized[1])) " (effort-standardized)"
+                  else " (published as-is, not effort-standardized)")))
+      }
+
+      div(
+        class = "cc-unit-note",
+        div(class = "cc-unit-note-head",
+            sprintf("Hexagon values average across %d different units:", nrow(u))),
+        tags$ul(
+          class = "cc-unit-list",
+          lapply(seq_len(nrow(u)), function(i) tags$li(
+            tags$strong(sprintf("%s obs (%.0f%%)",
+                                format(u$n[i], big.mark = ","), 100 * u$n[i] / n_tot)),
+            tags$span(class = "cc-unit-unit", u$cpue_unit[i]),
+            if (isTRUE(u$standardized[i]))
+              tags$span(class = "cc-unit-std", "effort-standardized")))),
         if (any(!u$standardized)) div(
-          class = "mt-1 fst-italic",
-          "Rows that are not effort-standardized are not catch-per-unit-effort: ",
-          "no tow volume or haul factor exists for them, so the published value ",
-          "is shown as-is. Compare those only with each other.")))
-    }
+          class = "cc-unit-foot",
+          "Rows not marked effort-standardized are shown as published."))
+    } else {
 
     req(rx$df_sp_poly)
 
@@ -981,6 +1178,7 @@ server <- function(input, output, session) {
           " %s observation(s) in %d other unit(s) are excluded — averaging across units is not a quantity.",
           format(sp_poly$n_excluded, big.mark = ","), nrow(sp_poly$units) - 1L))
     )
+    }
   })
 
   # ts_plot ----
@@ -1067,19 +1265,24 @@ server <- function(input, output, session) {
     p_out
   })
 
-  # sel_data -> modal_data(), spatial_filter_map ----
-  observeEvent(input$sel_data, {
-    # carry BOTH the variable and the dataset narrowing across a reopen; the
-    # modal is rebuilt from scratch each time, so anything not passed here silently
-    # resets to its default the next time the user opens the filters
-    showModal(modal_data(
-      env_var = rx$env_var %||% "temperature",
-      bio_ds  = isolate(bio_ds_selected())))
-    updateSelectizeInput(
-      session, "sel_name",
-      choices  = sp_names_for(isolate(bio_ds_selected())),
-      selected = isolate(rx$params$taxa),
-      server   = TRUE)
+  # edit_filters -> modal_edit_filters() ----
+  # Was triggered by input$sel_data (the sidebar's "Select Filters" button,
+  # which opened a 4-tab modal covering Taxa/Environmental/Temporal/Spatial).
+  # Taxa and Environmental Variable moved to the always-visible top bar
+  # (functions.R::top_bar_taxa_ui()/top_bar_env_ui()); Datasets, Depth, and
+  # Time now live directly in this compact panel, and Spatial moved out to
+  # its own dialog (modal_spatial_filter(), below) reached via the "Layers"
+  # row's "Change" link -- so this observer only needs to show the modal.
+  observeEvent(input$edit_filters, {
+    showModal(modal_edit_filters())
+  })
+
+  # edit_spatial -> modal_spatial_filter(), spatial_filter_map ----
+  # The "Layers" row's "Change" link inside modal_edit_filters(). Renders the
+  # exact same spatial_filter_map/tbl_places outputs the old Spatial TAB
+  # rendered on modal open -- only the trigger id changed.
+  observeEvent(input$edit_spatial, {
+    showModal(modal_spatial_filter())
 
     output$spatial_filter_map <- renderMaplibre({
       if (input$sel_places_cat == "Custom") {
@@ -1092,6 +1295,16 @@ server <- function(input, output, session) {
             position = "top-right",
             displayControlsDefault = FALSE,
             controls = list(polygon = TRUE, trash = TRUE))
+      } else if (input$sel_places_cat %in% sample_spatial_layers) {
+        # No polygon geometry loaded locally for these layers (see
+        # global.R::sample_spatial_layers) -- membership comes from
+        # sample_spatial instead of a drawn/rendered polygon. Plain basemap;
+        # selection happens in the table beside it (output$tbl_places).
+        maplibre(
+          style = carto_style(ifelse(
+            input$dark_toggle == "dark",
+            "dark-matter",
+            "voyager")))
       } else {
         places <- cc_places |>
           filter(
@@ -1132,12 +1345,7 @@ server <- function(input, output, session) {
      })
 
     output$tbl_places <- renderDataTable({
-      cc_places |>
-        as.data.frame() |>
-        filter(
-          category == input$sel_places_cat
-        ) |>
-        select(name)
+      places_names_for(input$sel_places_cat)
     })
   })
 
@@ -1149,9 +1357,14 @@ server <- function(input, output, session) {
     keep <- intersect(input$sel_name, sp_names_for(input$sel_bio_ds))
     updateSelectizeInput(
       session, "sel_name",
-      choices  = sp_names_for(input$sel_bio_ds),
+      choices  = sp_choices(input$sel_bio_ds),
       selected = keep,
-      server   = TRUE)
+      # server = FALSE on purpose: the custom .cc-combo2 panel is built by JS
+      # from the selectize <optgroup>/<option> DOM, and server-side selectize
+      # only ships a partial page of options -- which collapsed the picker to
+      # the handful of already-loaded taxa (e.g. "Seabirds & Mammals: 1").
+      # ~1,375 short options render client-side with no perceptible cost.
+      server   = FALSE)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
   # show-all -> environmental variable list ----
@@ -1169,7 +1382,12 @@ server <- function(input, output, session) {
   # Observe clicks on the grid layer of spatial filter map
   observeEvent(input$spatial_filter_map_feature_click, {
 
-    custom <- input$sel_places_cat == "Custom"
+    # Custom (drawn polygon) has no clickable fill layer at all; table-only
+    # categories (global.R::sample_spatial_layers) have no polygon loaded, so
+    # there is nothing on spatial_filter_map to click either -- selection for
+    # those happens via the tbl_places_rows_selected handler below instead.
+    custom <- input$sel_places_cat == "Custom" ||
+      input$sel_places_cat %in% sample_spatial_layers
 
     click <- input$spatial_filter_map_feature_click
 
@@ -1223,8 +1441,12 @@ server <- function(input, output, session) {
 
     sel_rows <- input$tbl_places_rows_selected
 
-    places_tbl <- cc_places |>
-      filter(category == input$sel_places_cat)
+    # places_names_for() is source-agnostic: cc_places rows for a mapped
+    # category, or sample_spatial-distinct spatial_name rows for a
+    # table-only layer (global.R::sample_spatial_layers) -- either way the
+    # table renders the same `name` column, so row index -> name works the
+    # same regardless of source.
+    places_tbl <- places_names_for(input$sel_places_cat)
 
     if (is.null(sel_rows) || length(sel_rows) == 0) {
       new_places <- character(0)
@@ -1237,36 +1459,59 @@ server <- function(input, output, session) {
       rx$sel_places <- new_places
     }
 
-    # Update map styling to highlight selected zones
-    if (length(new_places) > 0) {
-      maplibre_proxy("spatial_filter_map") |>
-        set_filter("sel-zones",
-                   list("in", list("get", "name"), list("literal", new_places))) |>
-        set_paint_property("sel-zones", "fill-opacity", 0.8) |>
-        set_paint_property("sel-zones", "fill-outline-color", "black") |>
-        set_filter("sel-zones-outline",
-                   list("in", list("get", "name"), list("literal", new_places))) |>
-        set_paint_property("sel-zones-outline", "line-opacity", 1.0)
-    } else {
-      # Reset filter if no zones selected
-      maplibre_proxy("spatial_filter_map") |>
-        set_paint_property("sel-zones", "fill-opacity", 0.0) |>
-        set_paint_property("sel-zones", "fill-outline-color", NULL) |>
-        set_paint_property("sel-zones-outline", "line-opacity", 0.0)
+    # Map styling only applies to categories with polygon geometry drawn on
+    # spatial_filter_map (the cc_places "sel-zones"/"sel-zones-outline"
+    # layers) -- table-only layers have no such layer to style.
+    if (!input$sel_places_cat %in% sample_spatial_layers) {
+      if (length(new_places) > 0) {
+        maplibre_proxy("spatial_filter_map") |>
+          set_filter("sel-zones",
+                     list("in", list("get", "name"), list("literal", new_places))) |>
+          set_paint_property("sel-zones", "fill-opacity", 0.8) |>
+          set_paint_property("sel-zones", "fill-outline-color", "black") |>
+          set_filter("sel-zones-outline",
+                     list("in", list("get", "name"), list("literal", new_places))) |>
+          set_paint_property("sel-zones-outline", "line-opacity", 1.0)
+      } else {
+        # Reset filter if no zones selected
+        maplibre_proxy("spatial_filter_map") |>
+          set_paint_property("sel-zones", "fill-opacity", 0.0) |>
+          set_paint_property("sel-zones", "fill-outline-color", NULL) |>
+          set_paint_property("sel-zones-outline", "line-opacity", 0.0)
+      }
     }
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
   # submit -> ... ----
-  observeEvent(input$submit, {
+  # do_apply_filters() ----
+  # The entire "apply the current selections" pipeline, factored out of what
+  # used to be a single observeEvent(input$submit, ...) so it can be invoked
+  # from TWO places: input$submit (the "Edit Filters" modal's footer button,
+  # for Temporal/Depth/Spatial changes) and the top-bar Species/Taxa +
+  # Compare Environmental Variable controls (which now live outside any
+  # modal and auto-apply on change, per the redesign -- see the observers
+  # right below this function). The body itself is UNCHANGED from the
+  # original submit handler: only the trigger moved, not the query logic.
+  do_apply_filters <- function() {
     if (debug) message("\n=== DATA SELECTION SUBMITTED ===\n")
 
     # collect input selections
+    #
+    # sel_qtr / sel_date_range / sel_depth_range live in modal_edit_filters(),
+    # which showModal() only builds on first open -- so on a fresh session
+    # input$sel_qtr et al. are NULL until the user has opened "Edit filters"
+    # once. The top-bar Species/Taxa + Compare controls call this function
+    # directly (no modal), so without a fallback the first taxon change of a
+    # session ran get_sp() with a NULL date range / quarter set and always
+    # came back empty ("No observations found"). Fall back to the last applied
+    # values (rx$params), then to the same startup defaults the session-once
+    # loader uses.
     sel_name        <- input$sel_name
     sel_env_var     <- input$sel_env_var
-    sel_qtr         <- input$sel_qtr
-    sel_date_range  <- input$sel_date_range
-    sel_depth_range <- input$sel_depth_range
-    ck_children     <- input$ck_children
+    sel_qtr         <- input$sel_qtr        %||% rx$params$sel_qtr     %||% 1:4
+    sel_date_range  <- input$sel_date_range %||% rx$params$date_range  %||% min_max_date
+    sel_depth_range <- input$sel_depth_range %||% rx$params$depth_range %||% c(0, 515)
+    ck_children     <- input$ck_children    %||% rx$params$ck_children %||% TRUE
 
     if (debug) message("Selections: sp_name =", sel_name, ", env_var =", sel_env_var)
 
@@ -1288,8 +1533,8 @@ server <- function(input, output, session) {
         depth_max        = sel_depth_range[2],
         include_children = ck_children,
         spatial          = if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) "polygon"
-                           else if (length(rx$sel_zones) > 0) "zones" else "none",
-        zones            = rx$sel_zones)
+                           else if (length(rx$sel_places) > 0) "zones" else "none",
+        zones            = rx$sel_places)
 
     # retrieve data (lazy tables from database) — timed + logged, non-blocking
     df_sp <- calcofi4r::cc_track_query(session, "map_query_sp",
@@ -1308,18 +1553,50 @@ server <- function(input, output, session) {
     # the SAME constraint — the tiles are a separate query against a separate
     # service, so a filter applied only to the dbplyr tables would leave the map
     # showing observations the plots beside it exclude.
-    spatial_wkt <- NULL
+    spatial_wkt   <- NULL
+    spatial_layer <- NULL  # set only for table-only (sample_spatial) categories
+    spatial_names <- NULL
+
     if (!is.null(drawn_polygon) && nrow(drawn_polygon) > 0) {
       spatial_wkt <- st_as_text(drawn_polygon$geometry[[1]])
 
-    } else if (!is.null(rx$sel_zones) && length(rx$sel_zones) > 0) {
-      spatial_wkt <- cc_grid_zones |>
-        filter(zone_key %in% rx$sel_zones) |>
-        pull(geom) |>
-        st_union() |>
-        st_as_text()
+    } else if (!is.null(rx$sel_places) && length(rx$sel_places) > 0) {
+      if (input$sel_places_cat %in% sample_spatial_layers) {
+        # Table-only categories (global.R::sample_spatial_layers) have no
+        # polygon geometry loaded to build WKT from -- filter by
+        # sample_spatial membership instead, the same mechanism
+        # prep_sp_poly()/prep_env_poly() already use for Summarize Within.
+        spatial_layer <- input$sel_places_cat
+        spatial_names <- rx$sel_places
+      } else {
+        # BUG FIX: this branch used to key off rx$sel_zones, matched against
+        # cc_grid_zones$zone_key -- but rx$sel_zones was only ever initialized
+        # to NULL, never assigned. The Spatial tab's map/table click handlers
+        # write rx$sel_places (by NAME, e.g. "Extended Nearshore"), for
+        # whichever cc_places category is active (input$sel_places_cat) -- not
+        # just CalCOFI Zones; BOEM Wind Planning Areas, Integrated Ecosystem
+        # Assessment and National Marine Sanctuaries use the same picker. So
+        # this branch never ran for ANY of the 4 categories: picking zones and
+        # hitting Submit silently filtered nothing.
+        spatial_wkt <- cc_places |>
+          filter(category == input$sel_places_cat, name %in% rx$sel_places) |>
+          pull(geom) |>
+          st_union() |>
+          st_as_text()
+      }
+
+    } else if (identical(input$sel_agg_unit %||% "hex", "hex") &&
+               !is.null(input$sel_map_area) &&
+               !input$sel_map_area %in% c("", "__all__")) {
+      # "Restrict map to area" (Plot Options) -- clip everything to one whole
+      # boundary layer, via the same sample_spatial membership the Spatial-tab
+      # filter uses. Hexagons mode only: a polygon summary is already one layer.
+      spatial_layer <- input$sel_map_area
+      spatial_names <- summary_layer_names[[input$sel_map_area]]
     }
-    rx$spatial_wkt <- spatial_wkt
+    rx$spatial_wkt   <- spatial_wkt
+    rx$spatial_layer <- spatial_layer
+    rx$spatial_names <- spatial_names
 
     if (!is.null(spatial_wkt)) {
       df_sp <- df_sp |>
@@ -1331,6 +1608,17 @@ server <- function(input, output, session) {
         filter(sql(paste0(
           "ST_Within(ST_Point(lon_dec, lat_dec), ST_GeomFromText('", spatial_wkt, "'))"
         )))
+
+    } else if (!is.null(spatial_layer)) {
+      tbl_spatial_sel <- sample_spatial_keys(spatial_layer, spatial_names)
+
+      # bio_obs/df_sp carries the sample grain as `sample_key`; env_obs/df_env
+      # carries the same key named `cast_id` (see functions.R::prep_env_poly).
+      df_sp <- df_sp |>
+        inner_join(tbl_spatial_sel, by = "sample_key")
+
+      df_env <- df_env |>
+        inner_join(tbl_spatial_sel, by = c("cast_id" = "sample_key"))
     }
 
     # validate data (only collect count, not full data)
@@ -1345,9 +1633,11 @@ server <- function(input, output, session) {
           quarters = sel_qtr, date_beg = sel_date_range[1],
           date_end = sel_date_range[2], status = "empty")
       showNotification("No observations found for selected species.", type = "warning")
-      # reopened on an empty result, so it must come back with what the user
-      # actually chose — resetting it here hides the filter that emptied it
-      showModal(modal_data(env_var = sel_env_var, bio_ds = input$sel_bio_ds))
+      # Taxa/Environmental Variable are always-visible top-bar controls now
+      # (not modal fields to "come back" to), so there's nothing to reopen --
+      # the user already sees exactly what they chose and can adjust it
+      # directly. Just stop before overwriting rx$df_sp/map_sp with an empty
+      # result.
       return(NULL)
     }
 
@@ -1363,7 +1653,10 @@ server <- function(input, output, session) {
     rx$params$sel_qtr     <- sel_qtr
     rx$params$date_range  <- sel_date_range
     rx$params$depth_range <- sel_depth_range
-    rx$params$zones       <- rx$zones
+    # was rx$zones, which -- like the sel_zones/sel_places bug fixed
+    # elsewhere in this file -- was never assigned by anything; rx$sel_places
+    # is what the Spatial-tab picker actually writes.
+    rx$params$zones       <- rx$sel_places
     rx$params$ck_children <- ck_children
     # so the download README and the usage log record which datasets the
     # numbers came from, not just which taxa
@@ -1378,14 +1671,23 @@ server <- function(input, output, session) {
       sel_date_range,
       sel_depth_range,
       drawn_polygon,
-      rx$sel_zones,
+      rx$sel_places,
       ck_children,
       bio_datasets = bio_ds_selected())
 
+    # compact one-line chip shown next to "Edit filters" in the top bar
+    # (functions.R::chip_summary_text()) -- Temporal/Depth/Spatial only,
+    # since Taxa/Environmental Variable are shown directly in their own
+    # top-bar controls and don't need repeating here.
+    rx$chip_summary <- chip_summary_text(
+      sel_qtr, sel_date_range, sel_depth_range,
+      sel_places = rx$sel_places,
+      is_custom  = !is.null(drawn_polygon) && nrow(drawn_polygon) > 0,
+      date_bounds = min_max_date)
+
     # build summary stats
     rx$summary_stats <- prep_summary_stats(
-      rx$df_sp,
-      rx$df_env
+      rx$df_sp, rx$df_env, rx$lbl_env_var %||% env_var_label(sel_env_var)
     )
 
     # generate map
@@ -1393,6 +1695,7 @@ server <- function(input, output, session) {
     spec <- sp_map_spec(
       df_sp, sel_name, sel_qtr, sel_date_range, ck_children,
       datasets = input$sel_bio_ds, poly_wkt = spatial_wkt,
+      spatial_layer = spatial_layer, spatial_names = spatial_names,
       is_dark  = input$dark_toggle == "dark")
     rx$map_sp       <- spec$map
     rx$sp_layer_ids <- spec$layer_ids
@@ -1406,6 +1709,21 @@ server <- function(input, output, session) {
     # two triggers), so a new selection has to ask for the rebuild explicitly.
     map_rebuild(map_rebuild() + 1)
 
+    # If a polygon summary (Summarize Within) is active, the rebuild above just
+    # put the HEX map back while input$sel_agg_unit still says the layer -- so
+    # a filter change / Compare toggle silently dropped the choropleth. Re-lay
+    # it once the freshly-rendered widget has loaded.
+    agg    <- isolate(input$sel_agg_unit)  %||% "hex"
+    estat  <- isolate(input$sel_env_stat)  %||% "mean"
+    if (!identical(agg, "hex")) {
+      later::later(function() {
+        tryCatch(
+          if (!is.null(rx$df_sp) && !is.null(rx$df_env)) apply_poly(agg, estat),
+          error = function(e)
+            if (debug) message("re-apply poly failed: ", conditionMessage(e)))
+      }, delay = 0.7)
+    }
+
     # prepare scatterplot data
     df_splot <- prep_splot(df_sp, df_env, "mean")
     rx$df_splot <- df_splot
@@ -1414,7 +1732,43 @@ server <- function(input, output, session) {
     rx$plot_depth <- NULL
 
     removeModal()
-  })
+  }
+
+  # Trigger #1: the "Edit Filters" modal's Submit button (Temporal/Depth/
+  # Spatial changes) -- same id (`submit`) the old modal always used.
+  observeEvent(input$submit, { do_apply_filters() })
+
+  # "Restrict map to area" (Plot Options) -- applies immediately, like changing
+  # taxon or toggling Compare. do_apply_filters() reads input$sel_map_area in
+  # its spatial block and rebuilds the map + plot/download tables clipped to it.
+  observeEvent(input$sel_map_area, {
+    trk("select_map_area", map_area = input$sel_map_area %||% "")
+    do_apply_filters()
+  }, ignoreInit = TRUE)
+
+  # Triggers #2-4: the top-bar controls auto-apply on change instead of
+  # waiting behind a button, per the redesign ("search is primary and
+  # visible"). req(input$sel_name) guards the transient moment a selectize
+  # multi-select is cleared to zero taxa before a new one is picked -- do_
+  # apply_filters()'s own empty-result handling covers a deliberate
+  # zero-observation selection, this just skips the flicker of an
+  # in-between empty state firing a full requery.
+  observeEvent(input$sel_name, {
+    req(input$sel_name)
+    # skip the requery when the value just caught up to what is already loaded
+    # -- e.g. the one-time updateSelectizeInput() in the default-data loader
+    # that makes the default taxon visibly selected in the search box
+    if (identical(input$sel_name, rx$params$taxa)) return()
+    do_apply_filters()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$cmp_env_toggle, {
+    do_apply_filters()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$sel_env_var, {
+    if (isTRUE(input$cmp_env_toggle)) do_apply_filters()
+  }, ignoreInit = TRUE)
 
   # plotly_click -> ... ----
   observeEvent(
@@ -1680,32 +2034,69 @@ server <- function(input, output, session) {
     div(class = "small", markdown(paste(rx$filter_summary, collapse = "  \n")))
   })
 
-  output$summary_statistics <- renderUI({
-    req(rx$summary_stats)
-    div(class = "small", markdown(paste(rx$summary_stats, collapse = "  \n")))
+  # top-bar filter chip row (Temporal/Depth/Spatial condensed to one line;
+  # Taxa/Environmental Variable aren't repeated here since they're already
+  # shown live in their own top-bar controls) -- see functions.R::
+  # chip_summary_text() and the "Edit filters" link beside it in ui.R
+  output$filter_chip_summary <- renderUI({
+    req(rx$chip_summary)
+    rx$chip_summary
   })
 
-  output$taxa_tree <- renderUI ({
-    req(rx$df_sp)
+  # modal_edit_filters()'s "Layers" row -- summarizes the spatial FILTER
+  # (input$sel_places_cat + rx$sel_places), matching the mockup's "CalCOFI
+  # Zones, 2 selected". This is the same spatial-filter state chip_summary_text()
+  # already reads for "N locations selected" in the chip row; this output just
+  # additionally names which category, since the Filters panel has the room.
+  output$spatial_layers_summary <- renderText({
+    cat <- input$sel_places_cat %||% "CalCOFI Zones"
+    n   <- length(rx$sel_places)
+    if (n > 0) sprintf("%s, %d selected", cat, n) else cat
+  })
 
-    tagList(
-      div(
-        id = "taxa-tree-heading",
-        class = "small",
-        style = "margin: 0 !important; padding: 0 !important;",
-        tags$style(HTML("
-          #taxa-tree-heading p {
-            margin-top: 0 !important;
-            margin-bottom: 0 !important;
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
-            line-height: 1.1 !important;
-          }
-        ")),
-        markdown("**Observations by Selected Taxa**")),
-      div(
-        style = "margin-top: 0;",
-        taxa_tree_builder(rx$df_sp))) })
+  # reset_filters -> defaults ----
+  # modal_edit_filters()'s "Reset all" link. Restores every input in the panel
+  # to its original startup default; does NOT call do_apply_filters() itself
+  # (the modal is still open, same as changing any field by hand) -- the user
+  # still clicks Apply, so nothing is queried until they confirm.
+  observeEvent(input$reset_filters, {
+    updateCheckboxGroupInput(session, "sel_bio_ds", selected = d_bio_datasets$dataset_key)
+    updateSliderInput(session, "sel_depth_range", value = c(0, 515))
+    updateCheckboxGroupButtons(session, "sel_qtr", selected = c("1", "2", "3", "4"))
+    updateDateRangeInput(
+      session, "sel_date_range",
+      start = min_max_date[1], end = min_max_date[2])
+  })
+
+  # Summary Statistics: a tight Species / Environment matrix -- label column
+  # then a value per side, one row per metric (functions.R::prep_summary_stats).
+  output$summary_statistics <- renderUI({
+    req(rx$summary_stats)
+    s <- rx$summary_stats
+    if (!is.data.frame(s) || !all(c("label", "sp", "env", "is_head") %in% names(s))) {
+      return(div(class = "small", markdown(paste(unlist(s), collapse = "  \n"))))
+    }
+    val <- function(txt, head) {
+      if (isTRUE(head) && grepl("^[A-Z]\\. ", txt %||% ""))
+        return(tags$span(class = "cc-ss-v", tags$em(txt)))   # abbreviated binomial
+      tags$span(class = "cc-ss-v", txt)
+    }
+    div(
+      class = "cc-ss",
+      lapply(seq_len(nrow(s)), function(i) tagList(
+        if (i == 2) div(class = "cc-ss-sep"),
+        div(class = "cc-ss-row",
+            tags$span(class = "cc-ss-k", s$label[i]),
+            val(s$sp[i],  s$is_head[i]),
+            val(s$env[i], s$is_head[i])))))
+  })
+
+  # the Map panel's sections collapse via a CSS class (display:none), which
+  # Shiny would read as "hidden" and leave these outputs unrendered until the
+  # user opens the section AND a reactive flush notices -- keep them live so a
+  # collapsed section opens already populated
+  for (.o in c("filter_summary", "summary_statistics", "poly_note"))
+    outputOptions(output, .o, suspendWhenHidden = FALSE)
 
   # download_data ----
   # Bundles original + summarized data with reproducible SQL. The integrated
@@ -1718,16 +2109,9 @@ server <- function(input, output, session) {
 
       raw_sel  <- input$sel_raw_data_download %||% character(0)
       proc_sel <- input$sel_proc_data_download %||% character(0)
-      all_sel  <- c(raw_sel, proc_sel)
-
-      if (length(all_sel) == 0) {
-        # tracked from inside content(), not on the button, so a click that
-        # never produces a file is counted as the dead end it is rather than
-        # as a download
-        trk("download_bundle", status = "no_selection")
-        showNotification("Select at least one dataset.", type = "warning")
-        return(NULL)
-      }
+      # the integrated dataset is the headline download -- always in the bundle
+      # (the UI leads with it, no checkbox); raw_env/raw_sp/chart tables opt in.
+      all_sel  <- unique(c("int", raw_sel, proc_sel))
 
       # download timing + budget. The zip only streams to the browser at the very
       # END (after all the CSVs are built), so a server-side build that runs long
