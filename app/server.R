@@ -109,6 +109,11 @@ server <- function(input, output, session) {
     # mismatch is what made the Spatial tab's filter silently a no-op; see the
     # submit handler.
     sel_places     = NULL,
+    # the category (input$sel_places_cat) those names were picked in. The
+    # submit handler matches names against THIS category's polygons, so a
+    # category change clears the names (observer below) rather than leaving
+    # BOEM names to be looked up among CalCOFI Zones.
+    sel_places_cat = NULL,
     map_sp         = NULL,
     sp_scale       = NULL,  # scale list for sp map
     env_scale      = NULL,  # scale list for env map
@@ -1280,15 +1285,22 @@ server <- function(input, output, session) {
     showModal(modal_edit_filters(
       depth_range = rx$params$depth_range %||% c(0, 515),
       qtr         = rx$params$sel_qtr     %||% 1:4,
-      date_range  = rx$params$date_range  %||% min_max_date))
+      date_range  = rx$params$date_range  %||% min_max_date,
+      # the dataset narrowing too (a ?datasets= link, or the user's own
+      # choice) -- rendering the tree with every box checked made
+      # input$sel_bio_ds all-datasets the moment the modal opened
+      bio_ds      = isolate(bio_ds_selected())))
   })
 
   # edit_spatial -> modal_spatial_filter(), spatial_filter_map ----
-  # The "Layers" row's "Change" link inside modal_edit_filters(). Renders the
+  # The "Area" row's "Change" link inside modal_edit_filters(). Renders the
   # exact same spatial_filter_map/tbl_places outputs the old Spatial TAB
   # rendered on modal open -- only the trigger id changed.
   observeEvent(input$edit_spatial, {
-    showModal(modal_spatial_filter())
+    # reopen on the category the picked names belong to, so the select and
+    # rx$sel_places cannot disagree
+    showModal(modal_spatial_filter(
+      cat = rx$sel_places_cat %||% input$sel_places_cat %||% "CalCOFI Zones"))
 
     output$spatial_filter_map <- renderMaplibre({
       if (input$sel_places_cat == "Custom") {
@@ -1385,6 +1397,18 @@ server <- function(input, output, session) {
     updateSelectInput(session, "sel_env_var", choices = ch, selected = sel)
   }, ignoreNULL = FALSE, ignoreInit = TRUE)
 
+  # switching category drops the names picked in the previous one: they are
+  # matched against the active category's polygons at submit, and the table /
+  # map highlight for the new category cannot show them anyway. Reopening the
+  # dialog on the same category (modal_spatial_filter(cat = )) is not a change.
+  observeEvent(input$sel_places_cat, {
+    if (!is.null(rx$sel_places_cat) &&
+        !identical(input$sel_places_cat, rx$sel_places_cat)) {
+      rx$sel_places     <- character(0)
+      rx$sel_places_cat <- NULL
+    }
+  })
+
   # Observe clicks on the grid layer of spatial filter map
   observeEvent(input$spatial_filter_map_feature_click, {
 
@@ -1411,7 +1435,8 @@ server <- function(input, output, session) {
         new_places <- c(current_places, clicked_place)
       }
 
-      rx$sel_places <- new_places
+      rx$sel_places     <- new_places
+      rx$sel_places_cat <- input$sel_places_cat
 
       # Update map styling to highlight selected zones
       if (length(new_places) > 0) {
@@ -1462,7 +1487,8 @@ server <- function(input, output, session) {
       new_places <- places_tbl$name[sel_rows]
 
       # Update reactive selection
-      rx$sel_places <- new_places
+      rx$sel_places     <- new_places
+      rx$sel_places_cat <- input$sel_places_cat
     }
 
     # Map styling only applies to categories with polygon geometry drawn on
@@ -2049,15 +2075,15 @@ server <- function(input, output, session) {
     rx$chip_summary
   })
 
-  # modal_edit_filters()'s "Layers" row -- summarizes the spatial FILTER
-  # (input$sel_places_cat + rx$sel_places), matching the mockup's "CalCOFI
+  # modal_edit_filters()'s "Area" row -- summarizes the spatial FILTER
+  # (rx$sel_places_cat + rx$sel_places), matching the mockup's "CalCOFI
   # Zones, 2 selected". This is the same spatial-filter state chip_summary_text()
   # already reads for "N locations selected" in the chip row; this output just
   # additionally names which category, since the Filters panel has the room.
   output$spatial_layers_summary <- renderText({
-    cat <- input$sel_places_cat %||% "CalCOFI Zones"
-    n   <- length(rx$sel_places)
-    if (n > 0) sprintf("%s, %d selected", cat, n) else cat
+    n <- length(rx$sel_places)
+    if (n > 0) sprintf("%s, %d selected", rx$sel_places_cat, n)
+    else "All locations"
   })
 
   # reset_filters -> defaults ----
@@ -2097,11 +2123,21 @@ server <- function(input, output, session) {
             val(s$env[i], s$is_head[i])))))
   })
 
+  # observations by selected taxa -- the per-taxon counts behind the matrix
+  # above (functions.R::taxa_tree_builder; ui.R's .cc-taxa rules style it)
+  output$taxa_tree <- renderUI({
+    req(rx$df_sp)
+    div(
+      class = "cc-taxa",
+      div(class = "cc-taxa-head", "Observations by selected taxa"),
+      taxa_tree_builder(rx$df_sp))
+  })
+
   # the Map panel's sections collapse via a CSS class (display:none), which
   # Shiny would read as "hidden" and leave these outputs unrendered until the
   # user opens the section AND a reactive flush notices -- keep them live so a
   # collapsed section opens already populated
-  for (.o in c("filter_summary", "summary_statistics", "poly_note"))
+  for (.o in c("filter_summary", "summary_statistics", "taxa_tree", "poly_note"))
     outputOptions(output, .o, suspendWhenHidden = FALSE)
 
   # download_data ----

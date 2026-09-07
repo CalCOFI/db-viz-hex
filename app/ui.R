@@ -116,9 +116,12 @@ ui <- function(req) page_navbar(
       "CalCOFI Hexagon Explorer", ga_app = "db-viz-hex",
       app_version = APP_VERSION, ip = calcofi4r::cc_client_ip(req)),
     tags$style(HTML("
-    /* shrink the whole UI a notch -- everything sized in rem (nav, cards,
-       buttons, the .cc-* controls, modals) scales with this one knob.
-       Bootstrap's default is 16px. */
+    /* shrink the app's own UI a notch -- everything Bootstrap sizes in rem
+       (cards, buttons, the .cc-* controls, modals) scales with this one knob;
+       Bootstrap's default is 16px. The brand header is NOT on this knob:
+       cc_brand_head() declares the brand's app scale (cc-scale=app) and
+       theme.css sizes the lockup, nav type and header height in px, so the
+       header stays contract-exact whatever this is set to. */
     html { font-size: 13.5px; }
 
     .treeview {

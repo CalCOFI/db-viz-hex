@@ -1266,6 +1266,16 @@ prep_filter_summary <- function(sel_name, sel_env_var, sel_qtr, sel_date_range,
               else paste0(length(sel_name), " taxa selected")
   out <- c(out, paste0("Taxa: **", taxa_val, "**"))
 
+  # Which datasets the numbers came from -- a CPUE could be ichthyo net tows,
+  # CUFES egg-pump counts, or both, and a ?datasets= link opens on one of them
+  # (it said "all 10" over a one-dataset map before 61d9524). Zero selected
+  # reads as all because that is what the filter does.
+  n_bio_all <- nrow(d_bio_datasets)
+  ds_val <- if (is.null(bio_datasets) || length(bio_datasets) == 0 ||
+                length(bio_datasets) == n_bio_all) paste0("all ", n_bio_all)
+            else paste(dataset_label(bio_datasets), collapse = ", ")
+  out <- c(out, paste0("Taxa datasets: **", ds_val, "**"))
+
   # Environmental variable -- "<label> — <dataset>", matching the top-bar card
   var_val <- if (is.null(sel_env_var) || !nzchar(sel_env_var)) {
     "none"
@@ -2038,13 +2048,19 @@ bio_ds_label <- function(selected, n_all = nrow(d_bio_datasets)) {
 #' have produced anyway -- verified by reading every call site before making
 #' this change, not assumed.
 #'
+#' @param bio_ds currently selected biological \code{dataset_key}s, so a reopen
+#'   (or a \code{?datasets=} link) does not silently reset the tree to every
+#'   dataset; \code{NULL} selects them all
+#'
 #' @return a \code{tagList} for the Filters panel's "Datasets" section
 #'
 #' @importFrom shiny checkboxGroupInput
 #' @importFrom jsonlite toJSON
 #'
 #' @export
-dataset_category_tree_ui <- function() {
+dataset_category_tree_ui <- function(bio_ds = NULL) {
+  bio_ds <- if (is.null(bio_ds)) d_bio_datasets$dataset_key
+            else intersect(bio_ds, d_bio_datasets$dataset_key)
   cat_order <- c("Fish", "Crustaceans", "Plankton", "Birds & Mammals")
   cats      <- c(intersect(cat_order, unique(d_bio_datasets$category)),
                  setdiff(unique(d_bio_datasets$category), cat_order))
@@ -2076,12 +2092,16 @@ dataset_category_tree_ui <- function() {
       tags$span(
         id    = "ds_tree_total",
         class = "small text-muted",
-        bio_ds_label(d_bio_datasets$dataset_key))),
+        bio_ds_label(bio_ds))),
     checkboxGroupInput(
       "sel_bio_ds",
       NULL,
       choices  = setNames(d_bio_datasets$dataset_key, d_bio_datasets$label),
-      selected = d_bio_datasets$dataset_key,
+      # the CURRENT selection, not "all": the modal is rebuilt on every open, and
+      # rendering it with every box checked made input$sel_bio_ds all-datasets
+      # the moment it opened -- which wiped a ?datasets= link (the URL-sync
+      # observer then rewrote the link to all ten) and any narrowing by hand
+      selected = bio_ds,
       width    = "100%"),
     div(
       class = "small text-muted",
@@ -2267,16 +2287,6 @@ cc_lyr_thumb <- function(group) {
   paste0("url('data:image/svg+xml,", utils::URLencode(svg, reserved = TRUE), "')")
 }
 
-#' The "Map Layers" overlay (functions.R -> server.R input$open_map_layers)
-#'
-#' A full-width modal of reference-boundary layers as thumbnail cards, grouped
-#' by \code{d_spatial_layers$group}. Each group is a \code{checkboxGroupInput}
-#' with the SAME ids the panel used (\code{lyr_<make.names(group)>}), so
-#' server.R's apply observer and \code{rx$spatial_visible} need no change -- the
-#' checkboxes just live in a modal again, styled as cards (CSS .cc-lyr-grid).
-#'
-#' @return a \code{modalDialog}
-#' @export
 #' Corner dismiss (X) button for a modalDialog title bar
 #'
 #' Bootstrap handles \code{data-bs-dismiss="modal"} itself and Shiny removes the
@@ -2383,6 +2393,22 @@ modal_feedback <- function(release = "", endpoint = "") {
     size = "l", easyClose = TRUE, fade = FALSE)
 }
 
+#' The "Map Layers" overlay (functions.R -> server.R input$open_map_layers)
+#'
+#' A full-width modal of reference-boundary layers as thumbnail cards, grouped
+#' by \code{d_spatial_layers$group}. Each group is a \code{checkboxGroupInput}
+#' with the SAME ids the panel used (\code{lyr_<make.names(group)>}), so
+#' server.R's apply observer and \code{rx$spatial_visible} need no change -- the
+#' checkboxes just live in a modal again, styled as cards (CSS .cc-lyr-grid).
+#'
+#' Visibility ONLY. Filtering to an area is Edit filters > Area
+#' (\code{modal_spatial_filter()}, or Plot Options > Restrict map to area), and
+#' rolling data up per polygon is Plot Options > Summarize Within -- the
+#' subtitle says so, because the three share a layer registry and read as one
+#' control when it did not.
+#'
+#' @return a \code{modalDialog}
+#' @export
 modal_map_layers <- function() {
   layer_choices <- split(
     setNames(d_spatial_layers$dataset_id, d_spatial_layers$layer),
@@ -2417,10 +2443,11 @@ modal_map_layers <- function() {
   modalDialog(
     title = tagList(
       modal_x_btn(),
-      "Layers",
+      "Map Layers",
       div(class = "small text-muted fw-normal",
-          "Selecting a layer shows its boundary on the map, filters the data to
-           it, and becomes available under Summarize Within on Download.")),
+          "Draw reference boundaries on the map. To keep only the samples inside
+           an area use Edit filters \u203a Area; to report one value per polygon
+           use Plot Options \u203a Summarize Within.")),
     size = "l", easyClose = TRUE, fade = FALSE,
     fluidRow(
       column(6, lapply(grps[seq_len(mid)], grp_block)),
@@ -2479,7 +2506,11 @@ map_panel_ui <- function() {
           class = "cc-sec is-shut", id = "cc-sec-stats",
           sec_head("stats", "bar-chart", "Summary Statistics"),
           div(class = "cc-sec-body",
-              uiOutput("summary_statistics"))),
+              uiOutput("summary_statistics"),
+              # observations by selected taxa (server.R output$taxa_tree,
+              # functions.R::taxa_tree_builder) -- the per-taxon breakdown the
+              # matrix above cannot show; styled by ui.R's .cc-taxa rules
+              uiOutput("taxa_tree"))),
 
         tags$section(
           class = "cc-sec", id = "cc-sec-options",
@@ -2686,18 +2717,18 @@ top_bar_env_ui <- function(env_var = "temperature") {
 #' Edit Filters Modal Dialog
 #'
 #' The redesign's "Edit filters" panel, matching the approved mockup: a
-#' single compact stack -- Datasets, Depth, Layers (spatial filter, opens
+#' single compact stack -- Datasets, Depth, Area (spatial filter, opens
 #' \code{modal_spatial_filter()} via "Change"), Time (quarter + date range) --
 #' rather than the old two-tab, full-width dialog. Taxa and Environmental
 #' Variable live in the always-visible top bar
 #' (\code{top_bar_taxa_ui()}/\code{top_bar_env_ui()}); everything here is
 #' set-once/rarely-touched and collapses behind the "Edit filters" link.
 #'
-#' No parameters: unlike the old `modal_data()`, nothing here needs to
-#' remember a prior selection across reopens -- `sel_qtr`, `sel_date_range`,
-#' `sel_depth_range`, `sel_bio_ds` and `sel_places_cat` are ordinary Shiny
-#' inputs that keep their own state whether or not this modal is currently
-#' open.
+#' Like the old `modal_data()`, it is rebuilt from scratch on every open, so
+#' the currently-applied depth / quarter / date range / datasets are passed in
+#' -- anything not passed silently resets to its default the next time the
+#' user opens "Edit filters" (server.R's `edit_filters` observer supplies them
+#' from `rx$params` and `bio_ds_selected()`).
 #'
 #' \code{sel_qtr} is now \code{shinyWidgets::checkboxGroupButtons()} (a row of
 #' toggle pills, matching the mockup) instead of a multi-select dropdown, and
@@ -2722,14 +2753,17 @@ top_bar_env_ui <- function(env_var = "temperature") {
 #' @param qtr current applied quarter selection; defaults to all four
 #' @param date_range current applied date range; defaults to the full
 #'   min_max_date span
+#' @param bio_ds currently selected biological \code{dataset_key}s (see
+#'   \code{dataset_category_tree_ui()}); \code{NULL} selects every dataset
 modal_edit_filters <- function(depth_range = c(0, 515),
                                 qtr = 1:4,
-                                date_range = min_max_date) {
+                                date_range = min_max_date,
+                                bio_ds = NULL) {
   modalDialog(
     title = tagList("Filters", modal_x_btn()),
     class = "cc-filters-modal",
 
-    dataset_category_tree_ui(),
+    dataset_category_tree_ui(bio_ds),
     hr(),
 
     div(
@@ -2752,12 +2786,18 @@ modal_edit_filters <- function(depth_range = c(0, 515),
       div(
         div(
           class = "d-flex align-items-center gap-2",
-          bs_icon("layers"), tags$strong("Layers"),
+          # "Area", not "Layers": this is the spatial FILTER (keep only the
+          # samples inside the picked polygons). The Map Layers button on the
+          # chip row only draws reference boundaries, and Plot Options'
+          # Summarize Within rolls data up per polygon -- three different
+          # things, and calling all three "layers" read as if picking one did
+          # all three.
+          bs_icon("geo-alt"), tags$strong("Area"),
           tags$span(class = "text-muted", " — "),
           textOutput("spatial_layers_summary", inline = TRUE)),
         div(
           class = "small text-muted",
-          "Shown on map, filters data, and available to summarize by")),
+          "Keep only samples inside the selected areas (or a drawn polygon)")),
       actionLink("edit_spatial", "Change", class = "flex-shrink-0")),
     hr(),
 
@@ -2791,15 +2831,21 @@ modal_edit_filters <- function(depth_range = c(0, 515),
   )
 }
 
-#' Spatial Filter Modal ("Layers" > Change)
+#' Spatial Filter Modal ("Area" > Change)
 #'
 #' The pre-defined-zones / drawn-polygon picker -- unchanged from the
 #' redesign's earlier "Spatial" tab, just its own dialog now instead of a tab
-#' inside \code{modal_edit_filters()}, reached via the "Layers" row's "Change"
+#' inside \code{modal_edit_filters()}, reached via the "Area" row's "Change"
 #' link. `sel_places_cat`/`spatial_filter_map`/`tbl_places` keep the exact
 #' same ids, so server.R's map-click/table-click handlers need no change --
 #' only the trigger that opens this dialog moved (`input$edit_spatial`
 #' instead of being rendered as part of `input$edit_filters`).
+#'
+#' @param cat the category the current \code{rx$sel_places} names belong to.
+#'   The dialog is rebuilt on every open; rendering the select at its default
+#'   while the picked names came from another category left
+#'   \code{input$sel_places_cat} and \code{rx$sel_places} disagreeing, and
+#'   Apply then matched the names against the wrong category's polygons.
 #'
 #' @return Shiny modal dialog object
 #'
@@ -2807,14 +2853,15 @@ modal_edit_filters <- function(depth_range = c(0, 515),
 #' @importFrom maplibre maplibreOutput
 #'
 #' @export
-modal_spatial_filter <- function() {
+modal_spatial_filter <- function(cat = "CalCOFI Zones") {
+  if (!cat %in% unlist(places_cat_choices)) cat <- "CalCOFI Zones"
   modalDialog(
-    title = tagList("Layers", modal_x_btn()),
+    title = tagList("Area", modal_x_btn()),
     "Select pre-defined zones by clicking on the map or table (some categories are table-only -- see below). Click selected zones again to deselect them. Alternatively, use the \"Custom\" category to drawn your own region of interest.",
     selectInput(
       "sel_places_cat",
       tags$b("Category"),
-      selected = "CalCOFI Zones",
+      selected = cat,
       # cc_places categories (clickable map + table), then every other
       # spatial_layers.csv layer grouped by its registry group
       # (table-only -- see global.R::sample_spatial_layers), then Custom.
