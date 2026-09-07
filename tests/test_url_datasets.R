@@ -53,5 +53,24 @@ ok("commas only",          parse_datasets_param(",,", KNOWN), NULL)
 ok("the dataset page's own link",
    parse_datasets_param("calcofi_bottle", KNOWN), "calcofi_bottle")
 
+# ?env= : the environmental dataset's leading variable (parse_env_param)
+start <- grep("^parse_env_param <- function", src)
+stopifnot(length(start) == 1)
+eval(parse(text = paste(src[start:length(src)], collapse = "\n")))
+
+ENV_VARS <- data.frame(
+  dataset_key      = c("calcofi_bottle", "calcofi_bottle", "calcofi_bottle", "calcofi_dic", "x_uncurated", "x_uncurated"),
+  measurement_type = c("salinity", "temperature", "r_temp", "dic", "zeta", "alpha"),
+  stringsAsFactors = FALSE)
+HEADLINE <- c("temperature", "salinity", "dic")
+
+ok("bottle leads with temperature",   parse_env_param("calcofi_bottle", ENV_VARS, HEADLINE), "temperature")
+ok("dic leads with dic",              parse_env_param("calcofi_dic", ENV_VARS, HEADLINE), "dic")
+ok("uncurated leads alphabetically",  parse_env_param("x_uncurated", ENV_VARS, HEADLINE), "alpha")
+ok("a taxa dataset is not env",       parse_env_param("swfsc_cufes", ENV_VARS, HEADLINE), NULL)
+ok("env: no parameter",               parse_env_param(NULL, ENV_VARS, HEADLINE), NULL)
+ok("env: empty parameter",            parse_env_param("", ENV_VARS, HEADLINE), NULL)
+ok("env: first of a list",            parse_env_param("calcofi_dic,calcofi_bottle", ENV_VARS, HEADLINE), "dic")
+
 cat("\n", if (fails) sprintf("%d FAILURE(S)\n", fails) else "all pass\n", sep = "")
 quit(status = if (fails) 1L else 0L)

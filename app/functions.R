@@ -3875,3 +3875,28 @@ parse_datasets_param <- function(param, known) {
   if (!length(keep)) return(NULL)
   unique(keep)
 }
+
+# ---- ?env= : open with an ENVIRONMENTAL dataset's first headline variable -----
+# ?datasets= drives the taxa picker only, so a calcofi.io page for bottle, CTD,
+# DIC, METS or picoplankton had nothing to deep-link with and said "pick the
+# dataset there". ?env=<dataset_key> is that link: the app flicks Compare on
+# and selects the dataset's LEADING variable -- the first entry of
+# ENV_HEADLINE_TYPES (global.R, curated per dataset in the order people plot
+# them: temperature for bottle, DIC for dic, SST for METS) that the release
+# actually carries for it. Same two rules as parse_datasets_param(): an
+# unknown key is ignored rather than erroring, and a dataset with no variable
+# in this release is NULL.
+#
+# @param param     the raw ?env= value (one dataset_key), or NULL
+# @param env_vars  data.frame with dataset_key + measurement_type (d_env_vars)
+# @param headline  the curated headline types in lead order (ENV_HEADLINE_TYPES)
+# @return the measurement_type to open on, or NULL
+parse_env_param <- function(param, env_vars, headline) {
+  if (is.null(param) || !length(param) || !nzchar(param[1])) return(NULL)
+  key <- trimws(strsplit(param[1], ",")[[1]])[1]
+  have <- env_vars$measurement_type[env_vars$dataset_key == key]
+  if (!length(have)) return(NULL)
+  lead <- headline[headline %in% have]
+  # an uncurated dataset leads with whatever it has (ENV_HEADLINE_SHOWN's rule)
+  if (length(lead)) lead[1] else sort(have)[1]
+}

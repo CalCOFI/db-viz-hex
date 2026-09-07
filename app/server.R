@@ -95,6 +95,7 @@ server <- function(input, output, session) {
     # opens the filter modal and chooses for themselves (see the url_datasets
     # observer below)
     url_datasets   = NULL,
+    url_env_var    = NULL,  # ?env= resolved to a measurement_type (see below)
     df_sp          = NULL,
     df_env         = NULL,
     env_hex_list   = NULL,  # cached env hex list for first map render
@@ -256,6 +257,28 @@ server <- function(input, output, session) {
     rx$params$bio_datasets <- keep
   }, ignoreNULL = FALSE)
 
+  # ?env=<dataset_key> : an environmental dataset's page links here (the taxa
+  # link above cannot select bottle/CTD/DIC/METS/picoplankton). Resolved to the
+  # dataset's leading variable by functions.R::parse_env_param(); the default
+  # loader below reads rx$url_env_var for its first env query, and the two
+  # updates put the top bar in the same state (Compare on, that variable
+  # selected). The cmp_env_toggle observer then re-applies once with the same
+  # inputs -- one redundant query, in exchange for no special case in
+  # do_apply_filters(). Runs before the default loader (same clientData
+  # trigger, created first), like the ?datasets= observer.
+  observeEvent(session$clientData$url_search, once = TRUE, {
+    q  <- getQueryString(session)
+    mt <- parse_env_param(q$env, d_env_vars, ENV_HEADLINE_TYPES)
+    if (is.null(mt)) {
+      if (!is.null(q$env) && nzchar(q$env))
+        message("?env=", q$env, " names no environmental dataset in this release — ignored")
+      return()
+    }
+    rx$url_env_var <- mt
+    updateSelectizeInput(session, "sel_env_var", selected = mt)
+    update_switch("cmp_env_toggle", value = TRUE)
+  }, ignoreNULL = FALSE)
+
   # keep the URL in sync with the dataset selection, the way db-viz-cruise does.
   # Every OTHER parameter is carried through untouched — ?theme= and ?tour= are
   # the brand contract (brand/v2/README items 5 and 9) and a screenshot URL that
@@ -281,7 +304,7 @@ server <- function(input, output, session) {
 
       # default selections
       sel_name        <- default_sp_name
-      sel_env_var     <- "temperature"
+      sel_env_var     <- isolate(rx$url_env_var) %||% "temperature"
       sel_qtr         <- 1:4
       sel_date_range  <- min_max_date
       sel_depth_range <- c(0, 515)
@@ -1059,12 +1082,15 @@ server <- function(input, output, session) {
     # legend as a near-opaque themed card -- the old 50%-white wash was
     # unreadable over the hexagons underneath, especially in light mode
     lg_dark  <- isTRUE(tryCatch(calcofi4r::cc_is_dark(input), error = function(e) FALSE))
+    # brand v2 tokens (calcofi.io/brand/v2/theme.css): --panel / --fg /
+    # --border per theme -- mapgl paints the legend itself, so it cannot read
+    # the CSS variables the rest of the page uses
     lg_style <- legend_style(
-      background_color   = if (lg_dark) "#1d1f21" else "#ffffff",
+      background_color   = if (lg_dark) "#182b49" else "#ffffff",
       background_opacity = 0.94,
-      text_color         = if (lg_dark) "#dee2e6" else "#212529",
-      title_color        = if (lg_dark) "#dee2e6" else "#212529",
-      border_color       = if (lg_dark) "#3a4045" else "#d1dae3",
+      text_color         = if (lg_dark) "#e9edf3" else "#182b49",
+      title_color        = if (lg_dark) "#e9edf3" else "#182b49",
+      border_color       = if (lg_dark) "#34486b" else "#dddddd",
       border_width       = 1,
       border_radius      = 8,
       # a genuinely compact legend -- smaller type + tighter padding, not just

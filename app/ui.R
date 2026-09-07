@@ -381,12 +381,12 @@ ui <- function(req) page_navbar(
     }
     [data-bs-theme='dark'] .selectize-dropdown .optgroup-header,
     [data-bs-theme='dark'] select optgroup {
-      color: #f8f9fa !important;
-      background-color: #343a40 !important;
+      color: #e9edf3 !important;
+      background-color: #21375c !important;   /* brand --panel-2 */
     }
     [data-bs-theme='light'] .selectize-dropdown .optgroup-header,
     [data-bs-theme='light'] select optgroup {
-      color: #212529 !important;
+      color: #182b49 !important;
       background-color: #e9ecef !important;
     }
     /* separate one dataset's variables from the next */
@@ -472,15 +472,30 @@ ui <- function(req) page_navbar(
       --cc-accent-soft:    color-mix(in srgb, var(--bs-primary) 16%, transparent);
     }
 
-    /* --- dark theme: borders were mixing in ~38% of the near-white body
-       colour, so every pill / card outline read whitish. Derive them from the
-       dark GROUND instead -- a quiet hairline a step darker than the surface.
-       --cc-muted was --bs-secondary-color (~#adb5bd) which read too faint for
-       body copy -- pull it toward the text colour so labels are legible. */
+    /* --- dark theme: brand v2's navy ground (calcofi.io/brand/v2/theme.css
+       :root[data-theme=dark]), mapped onto the bslib tokens every --cc-*
+       token derives from. Until 2026-09-07 nothing did this mapping, so dark
+       mode was Bootstrap's own #1d1f21 near-black on every surface -- the
+       brand's theme.css was loaded but only its header chip read it. The
+       values are the contract's, not tuned here: --bg / --panel / --panel-2 /
+       --border / --fg / --muted / --accent. */
     [data-bs-theme='dark'] {
-      --cc-border:        color-mix(in srgb, var(--bs-border-color) 52%, var(--bs-body-bg) 48%);
-      --cc-border-strong: color-mix(in srgb, var(--bs-border-color) 78%, var(--bs-body-color) 10%);
-      --cc-muted:         color-mix(in srgb, var(--bs-body-color) 66%, var(--bs-body-bg));
+      --bs-body-bg:        #0f1a2e;   /* --bg: just below UCSD Navy */
+      --bs-body-color:     #e9edf3;   /* --fg */
+      --bs-tertiary-bg:    #182b49;   /* --panel (UCSD Navy) -> --cc-surface */
+      --bs-secondary-bg:   #21375c;   /* --panel-2 -> --cc-tool */
+      --bs-border-color:   #34486b;   /* --border */
+      --bs-secondary-color:#9fb0c8;   /* --muted */
+      --bs-primary:        #4fb6e6;   /* --accent, UCSD Blue lifted for the dark ground */
+      --bs-primary-rgb:    79, 182, 230;
+      --bs-link-color:     #4fb6e6;
+      --bs-link-color-rgb: 79, 182, 230;
+      --bs-link-hover-color: #8ad0f0;  /* --accent-d */
+      --bs-link-hover-color-rgb: 138, 208, 240;
+      --cc-muted:         #9fb0c8;
+      /* the brand border is already a readable step off the navy ground */
+      --cc-border:        var(--bs-border-color);
+      --cc-border-strong: color-mix(in srgb, var(--bs-border-color) 70%, var(--bs-body-color) 30%);
       /* a touch deeper + faintly blue-tinted so cards lift off the dark ground
          the way the white theme's shadow does */
       --cc-shadow:        0 1px 3px rgba(0, 0, 0, 0.6),
@@ -493,7 +508,13 @@ ui <- function(req) page_navbar(
        the map frame and the chip all pick it up. Dark theme is untouched. */
     [data-bs-theme='light'] {
       --bs-body-bg:        #eef2f7;   /* page ground */
-      --bs-body-color:     #172029;
+      --bs-body-color:     #182b49;   /* --fg: UCSD Navy type, the brand's light rule */
+      --bs-primary:        #00629b;   /* --accent: UCSD Blue */
+      --bs-primary-rgb:    0, 98, 155;
+      --bs-link-color:     #00629b;
+      --bs-link-color-rgb: 0, 98, 155;
+      --bs-link-hover-color: #004663;  /* --accent-d */
+      --bs-link-hover-color-rgb: 0, 70, 99;
       --bs-tertiary-bg:    #ffffff;   /* --cc-surface: cards, chip, panel */
       --bs-secondary-bg:   #e4ebf2;   /* --cc-tool: button / segmented-control track */
       --bs-border-color:   #cfd8e2;
@@ -503,7 +524,15 @@ ui <- function(req) page_navbar(
       --cc-border-strong: color-mix(in srgb, var(--bs-border-color) 45%, var(--bs-body-color) 30%);
       --cc-shadow:        0 1px 3px rgba(23, 40, 60, 0.14), 0 10px 24px rgba(23, 40, 60, 0.10);
     }
-    [data-bs-theme='light'] body { background-color: var(--bs-body-bg); }
+    [data-bs-theme='light'] body,
+    [data-bs-theme='dark']  body { background-color: var(--bs-body-bg); }
+    /* the navbar and its tab underline follow the brand tokens too */
+    [data-bs-theme='dark'] .bslib-page-navbar > .navbar { background-color: var(--bs-tertiary-bg); }
+    .btn-primary {
+      --bs-btn-bg: var(--bs-primary); --bs-btn-border-color: var(--bs-primary);
+      --bs-btn-hover-bg: var(--bs-link-hover-color); --bs-btn-hover-border-color: var(--bs-link-hover-color);
+    }
+    [data-bs-theme='dark'] .btn-primary { --bs-btn-color: #0f1a2e; --bs-btn-hover-color: #0f1a2e; }
 
     /* ================================================================
        The Map tab's left pane -- a custom flex column (NOT bslib sidebar).
