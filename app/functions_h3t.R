@@ -30,6 +30,24 @@ poly_clause <- function(poly_wkt, lon_col, lat_col) {
     .con = DBI::ANSI())
 }
 
+# Sample-spatial membership clause: the h3t-path counterpart to the
+# sample_spatial inner_join functions.R::prep_sp_poly()/prep_env_poly() use to
+# aggregate and functions.R::sample_spatial_keys()/server.R's classic-path
+# submit handler use to filter. For spatial_layers.csv layers with no polygon
+# geometry loaded (global.R::sample_spatial_layers), so poly_clause()'s
+# ST_Within is not an option -- queries the SAME sample_spatial table this
+# h3t service's DuckDB already has loaded, keyed by sample_key (bio_obs) or
+# cast_id (env_obs; see sample_key_col).
+sample_spatial_clause <- function(spatial_layer, spatial_names, sample_key_col) {
+  if (is.null(spatial_layer) || is.null(spatial_names) || length(spatial_names) == 0)
+    return(NULL)
+  glue::glue_sql(
+    "{DBI::SQL(sample_key_col)} IN (
+       SELECT sample_key FROM sample_spatial
+        WHERE layer = {spatial_layer} AND spatial_name IN ({spatial_names*}))",
+    .con = DBI::ANSI())
+}
+
 #' Species tile SELECT: projects (cell_id, value, n) from bio_obs.
 #'
 #' Takes the ALREADY-RESOLVED `taxon_key`s from \code{resolve_sp_ids()} rather
@@ -45,7 +63,8 @@ poly_clause <- function(poly_wkt, lon_col, lat_col) {
 #' by construction. Since both now filter `taxon_key`, there is one key space
 #' rather than a worms_id set plus a scientific_name set to keep in agreement.
 build_sp_sql <- function(taxon_keys, qtr, date_range,
-                         datasets = NULL, poly_wkt = NULL) {
+                         datasets = NULL, poly_wkt = NULL,
+                         spatial_layer = NULL, spatial_names = NULL) {
   taxa <- if (length(taxon_keys) > 0) {
     glue::glue_sql("taxon_key IN ({taxon_keys*})", .con = DBI::ANSI())
   } else {
@@ -62,7 +81,8 @@ build_sp_sql <- function(taxon_keys, qtr, date_range,
       .con = DBI::ANSI())),
     if (!is.null(datasets) && length(datasets) > 0)
       as.character(glue::glue_sql("dataset_key IN ({datasets*})", .con = DBI::ANSI())),
-    as.character(poly_clause(poly_wkt, "longitude", "latitude")))
+    as.character(poly_clause(poly_wkt, "longitude", "latitude")),
+    as.character(sample_spatial_clause(spatial_layer, spatial_names, "sample_key")))
 
   as.character(glue::glue_sql(
     "SELECT {hex_col} AS cell_id, AVG(std_tally) AS value, COUNT(*) AS n
@@ -75,7 +95,8 @@ build_sp_sql <- function(taxon_keys, qtr, date_range,
 # env SELECT: projects (cell_id, value, n) from env_obs.
 build_env_sql <- function(measurement_type, qtr, date_range, depth_range,
                           stat = c("mean", "median", "min", "max", "sd"),
-                          poly_wkt = NULL) {
+                          poly_wkt = NULL,
+                          spatial_layer = NULL, spatial_names = NULL) {
   stat <- match.arg(stat)
   agg <- switch(stat,
     mean   = "AVG(qty)",
@@ -94,7 +115,10 @@ build_env_sql <- function(measurement_type, qtr, date_range, depth_range,
       .con = DBI::ANSI())),
     as.character(glue::glue_sql(
       "depth_m BETWEEN {depth_range[1]} AND {depth_range[2]}", .con = DBI::ANSI())),
-    as.character(poly_clause(poly_wkt, "lon_dec", "lat_dec")))
+    as.character(poly_clause(poly_wkt, "lon_dec", "lat_dec")),
+    # env_obs carries the sample grain as `cast_id`, not `sample_key` (see
+    # functions.R::prep_env_poly)
+    as.character(sample_spatial_clause(spatial_layer, spatial_names, "cast_id")))
 
   as.character(glue::glue_sql(
     "SELECT {hex_col} AS cell_id, {DBI::SQL(agg)} AS value, COUNT(*) AS n
