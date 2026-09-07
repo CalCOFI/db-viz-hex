@@ -1274,7 +1274,13 @@ server <- function(input, output, session) {
   # its own dialog (modal_spatial_filter(), below) reached via the "Layers"
   # row's "Change" link -- so this observer only needs to show the modal.
   observeEvent(input$edit_filters, {
-    showModal(modal_edit_filters())
+    # carry the currently-applied depth/quarter/date-range across a reopen --
+    # the modal is rebuilt from scratch each time, so anything not passed
+    # here silently resets to its default (see modal_edit_filters() docs)
+    showModal(modal_edit_filters(
+      depth_range = rx$params$depth_range %||% c(0, 515),
+      qtr         = rx$params$sel_qtr     %||% 1:4,
+      date_range  = rx$params$date_range  %||% min_max_date))
   })
 
   # edit_spatial -> modal_spatial_filter(), spatial_filter_map ----

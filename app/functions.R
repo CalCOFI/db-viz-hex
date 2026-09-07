@@ -2717,7 +2717,14 @@ top_bar_env_ui <- function(env_var = "temperature") {
 #' @importFrom shinyWidgets checkboxGroupButtons
 #'
 #' @export
-modal_edit_filters <- function() {
+#' @param depth_range current applied depth range (m); defaults to the full
+#'   span (no filter) only when nothing has been applied yet
+#' @param qtr current applied quarter selection; defaults to all four
+#' @param date_range current applied date range; defaults to the full
+#'   min_max_date span
+modal_edit_filters <- function(depth_range = c(0, 515),
+                                qtr = 1:4,
+                                date_range = min_max_date) {
   modalDialog(
     title = tagList("Filters", modal_x_btn()),
     class = "cc-filters-modal",
@@ -2731,9 +2738,9 @@ modal_edit_filters <- function() {
     sliderInput(
       "sel_depth_range",
       label = NULL,
-      # default spans the full range (no filter); depth only narrows the
-      # environmental layers -- get_sp() has no depth filter
-      min = 0, max = 515, value = c(0, 515),
+      # full range = 0-515; `value` reopens on whatever is currently applied
+      # (see server.R's edit_filters observer) instead of always resetting
+      min = 0, max = 515, value = depth_range,
       post  = " m",
       width = "100%"),
     div(class = "small text-muted mt-1",
@@ -2761,15 +2768,15 @@ modal_edit_filters <- function() {
       "sel_qtr",
       label    = NULL,
       choices  = c(Q1 = 1, Q2 = 2, Q3 = 3, Q4 = 4),
-      selected = 1:4,
+      selected = qtr,
       status   = "outline-primary",
       size     = "sm"),
     dateRangeInput(
       "sel_date_range",
       label     = NULL,
       startview = "year",
-      start = min_max_date[1],
-      end   = min_max_date[2],
+      start = date_range[1],
+      end   = date_range[2],
       min   = min_max_date[1],
       max   = min_max_date[2],
       width = "100%"),
