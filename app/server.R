@@ -2064,7 +2064,13 @@ server <- function(input, output, session) {
       drawn_polygon,
       rx$sel_places,
       ck_children,
-      bio_datasets = bio_ds_selected())
+      # sel_bio_ds, NOT bio_ds_selected(): on the reset_filters path the
+      # reset value arrives as reset_bio_datasets and input$sel_bio_ds has
+      # not round-tripped yet (see the reset_* note on this function), so
+      # bio_ds_selected() reported the PRE-reset datasets in a summary
+      # describing a query built from the reset ones. Every other argument
+      # here is already the local sel_*.
+      bio_datasets = sel_bio_ds)
 
     # compact one-line chip shown next to "Edit filters" in the top bar
     # (functions.R::chip_summary_text()) -- Temporal/Depth/Spatial only,
@@ -2466,10 +2472,22 @@ server <- function(input, output, session) {
   })
 
   # reset_filters -> defaults ----
-  # modal_edit_filters()'s "Reset all" link. Restores every input in the panel
-  # to its original startup default; does NOT call do_apply_filters() itself
-  # (the modal is still open, same as changing any field by hand) -- the user
-  # still clicks Apply, so nothing is queried until they confirm.
+  # modal_edit_filters()'s "Reset all" link. Restores every input IN THAT
+  # PANEL to its original startup default, then applies them: it calls
+  # do_apply_filters() with the reset values as overrides, and that function
+  # ends in removeModal(). (This paragraph used to say the opposite -- that
+  # nothing was queried until the user clicked Apply -- which was true before
+  # "reset all should auto apply"; see the note on the do_apply_filters()
+  # call at the bottom of this observer.)
+  #
+  # "in that panel" is the scope, and it is deliberate: input$sel_map_area
+  # ("Restrict map to area") lives in Plot Options and input$ck_children in
+  # the taxa combo, so neither is reset here and do_apply_filters() reads
+  # both live. An area restriction therefore SURVIVES a "Reset all" and the
+  # re-applied query is still clipped to it (the third spatial branch in
+  # do_apply_filters). That is consistent with those controls being outside
+  # this modal, but it is not what "Reset all" reads like from the outside --
+  # worth revisiting if it is reported as surprising.
   #
   # rx$sel_places was missing here (bug report 2026-09-08: "reset all
   # doesn't work" -- Datasets/Depth/Time all correctly went back to their

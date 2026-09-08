@@ -176,11 +176,15 @@ get_taxon_parentage <- function(taxonID, con, authority = "WoRMS"){
 #'
 #' @param sp_name Character vector of picker labels, "Common (rank: Scientific)"
 #' @param ck_children Include taxonomic children of the selected taxa
+#'   (default: FALSE, matching the "Include taxonomic children" checkbox the
+#'   taxa combo renders. This defaulted to TRUE while every caller had moved
+#'   to FALSE, so the next caller to omit it would silently have re-enabled
+#'   the descendant walk.)
 #'
 #' @return list with \code{taxon_keys} (character `taxon_key`s)
 #'
 #' @export
-resolve_sp_ids <- function(sp_name, ck_children = TRUE) {
+resolve_sp_ids <- function(sp_name, ck_children = FALSE) {
   # Memoized: a Submit resolves the same selection twice — once for get_sp()'s
   # table query and once for the tile SQL — and the children walk runs one
   # recursive CTE PER selected taxon, so a 50-taxon selection is 50 round trips
@@ -250,7 +254,7 @@ resolve_sp_ids <- function(sp_name, ck_children = TRUE) {
 sp_ids_cache <- new.env(parent = emptyenv())
 
 
-get_sp <- function(sp_name, qtr, date_range, ck_children = TRUE, datasets = NULL) {
+get_sp <- function(sp_name, qtr, date_range, ck_children = FALSE, datasets = NULL) {
   if (debug)
     message(
       "get_sp: sp_name = ", paste(sp_name, collapse = ", "),
@@ -3210,8 +3214,13 @@ attribution_table_html <- function() {
 
   attrib <- ATTRIBUTIONS
 
-  # keep the app's existing dataset order (DATASET_LABELS' declaration order)
-  ordered_keys <- names(DATASET_LABELS)
+  # keep the app's existing dataset order (DATASET_LABELS' declaration order),
+  # then any dataset_key the curated map does not list, in CSV order. Ordering
+  # by match() alone put those at NA; selecting `ordered_keys %in% ...` below
+  # dropped them from the page entirely while n_datasets still counted them --
+  # a row added to attributions.csv for a newly ingested dataset would have
+  # gone missing from the one page that exists to show it.
+  ordered_keys <- union(names(DATASET_LABELS), unique(attrib$dataset_key))
   attrib <- attrib[order(match(attrib$dataset_key, ordered_keys)), ]
 
   # one dl-style field per non-empty value; has_val() treats a true NA (an
@@ -3261,7 +3270,9 @@ attribution_table_html <- function() {
     g <- attrib[attrib$dataset_key == key, ]
     multi  <- nrow(g) > 1
     shared <- shared_license_for(g)
-    programs <- paste(unique(g$program), collapse = "; ")
+    # summarize_programs(), not paste(): a blank `program` cell is NA and
+    # paste() stringifies it to "NA" -- see summarize_institutions()
+    programs <- summarize_programs(g$program)
     insts    <- summarize_institutions(g$institution)
     tags$details(
       class = "cc-attrib-row",
@@ -3270,7 +3281,7 @@ attribution_table_html <- function() {
       open = NA,
       tags$summary(
         div(class = "cc-attrib-main",
-            span(class = "cc-attrib-name", DATASET_LABELS[[key]] %||% key),
+            span(class = "cc-attrib-name", dataset_label(key)),
             if (multi) span(class = "cc-attrib-comp-count",
                              sprintf("%d sources", nrow(g)))),
         div(class = "cc-attrib-provider",
@@ -3339,7 +3350,7 @@ attrib_provider_parts <- function(keys) {
   ks <- unique(rows$dataset_key)
   parts <- lapply(ks, function(k) {
     g     <- rows[rows$dataset_key == k, ]
-    progs <- paste(unique(g$program), collapse = "; ")
+    progs <- summarize_programs(g$program)
     insts <- summarize_institutions(g$institution)
     list(program = progs, institution = insts)
   })
@@ -3377,12 +3388,65 @@ attrib_provider_summary <- function(keys) {
 #' "the program prefix should be removed because it is just repeated on
 #' bottom"). Falls back to the full label if it doesn't match that shape.
 #'
+#' Goes through global.R::dataset_label() rather than DATASET_LABELS directly.
+#' DATASET_LABELS is the third of four fallbacks there, not the authority, and
+#' the keys reaching this function are measured live off bio_obs
+#' (dataset_list_picker_ui()) or read from attributions.csv -- either can name
+#' a dataset the curated map has never heard of. `DATASET_LABELS[[key]] %||%
+#' key` could not fall back at all: `[[` on a named atomic vector with a
+#' missing name throws "subscript out of bounds" BEFORE `%||%` is reached, so
+#' a newly ingested dataset errored the filter picker instead of showing its
+#' raw key. dataset_label() is NA-safe by construction and ends on that same
+#' raw key.
+#'
 #' @param key single dataset_key
 #' @return character(1)
 #' @export
 dataset_short_label <- function(key) {
-  lbl <- DATASET_LABELS[[key]] %||% key
+  lbl <- dataset_label(key)
   sub("^[^:]+:\\s*", "", lbl)
+}
+
+#' Strip a curator's "confirmed ..." annotation off a license string
+#'
+#' `attributions.csv`'s `license` column carries editorial "how/when this was
+#' verified" notes for the curator's own reference. Useful in the CSV, not part
+#' of the license, and never shown to users -- see the `ATTRIBUTIONS` read in
+#' global.R, which is the only caller.
+#'
+#' Both forms the CSV uses are handled: parenthesised ("CC-BY-4.0 (confirmed
+#' via calcofi.org/..., 2026-09-07)") and dash-introduced ("CC BY 4.0 --
+#' confirmed via the Farallon Institute Data Sharing Agreement, 23 July
+#' 2025."). Only the parenthesised one used to be, so the dash form reached
+#' users AND -- at 87 characters -- pushed a plain CC-BY row past
+#' \code{\link{is_short_license}}'s 40-character pill threshold into a
+#' collapsed "License & disclaimer" block.
+#'
+#' Anchored on the word "confirmed" so a license whose own text contains a
+#' dash or a trailing parenthetical (the NOAA ERDDAP disclaimer, both EDI
+#' customs, the Ohman Data Use Policy) is left exactly as written.
+#'
+#' @param license character vector of `license` values
+#' @return the same vector, annotation removed and whitespace squished
+#' @export
+strip_license_annotation <- function(license) {
+  stringr::str_squish(stringr::str_remove(
+    license, "\\s*(\\(confirmed[^)]*\\)|(--|\u2014|\u2013)\\s*confirmed\\b.*)\\s*$"))
+}
+
+#' Join a dataset's per-component `program` strings, dropping blanks
+#'
+#' The `program` counterpart to \code{\link{summarize_institutions}}: an empty
+#' CSV cell reads as NA_character_ and a bare
+#' \code{paste(unique(x), collapse = "; ")} renders it as the literal text
+#' "NA" in the map title popover, the Data Sources row and the search
+#' dropdown subtitle.
+#'
+#' @param program character vector of one dataset's `program` values
+#' @return character(1); "" when no component states a program
+#' @export
+summarize_programs <- function(program) {
+  paste(unique(program[has_val_v(program)]), collapse = "; ")
 }
 
 #' Combine a dataset's per-component institution strings into one short label
@@ -3396,9 +3460,13 @@ dataset_short_label <- function(key) {
 #' de-duplicates before rejoining, so the result is short and non-repetitive.
 #' @export
 summarize_institutions <- function(institution) {
+  # has_val_v(), not nzchar(): an empty CSV cell reads as NA_character_,
+  # strsplit() passes that through as an NA token, and nzchar(NA) is TRUE --
+  # so a bare nzchar() filter let paste() render the literal text "NA" as an
+  # institution. Same trap has_val() was introduced for above.
   tokens <- unlist(strsplit(institution, "\\s*/\\s*"))
   tokens <- gsub("[^()/]*\\(([A-Za-z0-9]+)\\)", "\\1", trimws(tokens))
-  paste(unique(tokens[nzchar(tokens)]), collapse = " / ")
+  paste(unique(tokens[has_val_v(tokens)]), collapse = " / ")
 }
 
 #' regex for a URL embedded in citation text -- must end on a non-punctuation
@@ -3520,7 +3588,7 @@ attrib_citation_html <- function(keys) {
       entries[[length(entries) + 1]] <- div(
         class = "cc-cite-entry",
         div(class = "cc-cite-entry-top",
-            span(class = "cc-cite-entry-name", DATASET_LABELS[[k]] %||% k),
+            span(class = "cc-cite-entry-name", dataset_label(k)),
             div(class = "cc-cite-actions",
                 citation_source_link(cite_text, d$source_url), cc_copy_button(cite_text))),
         div(class = "cc-cite-mono", citation_text_html(cite_text)),
@@ -3539,7 +3607,7 @@ attrib_citation_html <- function(keys) {
       entries[[length(entries) + 1]] <- div(
         class = "cc-cite-entry cc-cite-group",
         div(class = "cc-cite-entry-name cc-cite-group-name",
-            DATASET_LABELS[[k]] %||% k,
+            dataset_label(k),
             span(class = "cc-attrib-comp-count", sprintf("%d sources", nrow(g)))),
         tagList(comps),
         if (has_val(shared)) license_disclaimer_block(shared))
@@ -3621,8 +3689,12 @@ modal_cite_data <- function(keys) {
         div(class = "cc-cite-mono",
             paste0("CalCOFI Hexagon Explorer. ", APP_CITE_URL))),
       p(class = "cc-muted cc-cite-more",
-        "Full citations, licenses, and acknowledgements for all 15 ",
-        "contributing datasets are on the ",
+        # counted from ATTRIBUTIONS, not typed: adding a row to
+        # attributions.csv is the whole workflow for a new source, and a
+        # hardcoded number silently goes stale the first time it is used
+        "Full citations, licenses, and acknowledgements for all ",
+        length(unique(ATTRIBUTIONS$dataset_key)),
+        " contributing datasets are on the ",
         actionLink("cite_modal_datasources_link", "Data Sources"), " tab.")),
     footer = tagList(
       tags$button(type = "button", class = "btn btn-secondary",
@@ -4207,6 +4279,18 @@ reproduce_md <- function(manifest) {
     "| `data/integrated/integrated_<method>.csv` | `query/integrated_<method>.sql` | bio matched to env in time + space |",
     "| `query/manifest.json` | — | release version, filters, row counts, md5 checksums |",
     "",
+    "## Scope of `bio.csv`",
+    "",
+    paste(
+      "The biological query is **SWFSC ichthyoplankton** only, as a",
+      "standardized tally (count per 10 m^2: raw tally x std_haul_factor /",
+      "prop_sorted). Your taxa, quarters, date range and the \"include",
+      "taxonomic children\" setting are all applied to it. The app's",
+      "**Datasets** filter and its **Standardized as** unit pick are not --",
+      "they shape what the map and plots show, not this export. Read",
+      "`query/bio.sql` for the exact filter set; every other dataset in the",
+      "release is queryable the same way from the same public Parquet."),
+    "",
     glue(
       "`<method>` is one of `nearest_time`, `nearest_dist`, `average` — how the ",
       "environmental observations within the match window are reduced per ",
@@ -4449,8 +4533,9 @@ build_download_bundle <- function(zip_root, params, version = NULL) {
 #'
 #' @param df_sp species table (lazy or collected) carrying `cpue_unit`,
 #'   `tow_type`, `std_haul_factor`
-#' @return a tibble with `cpue_unit`, `standardized` (logical), `n`, ordered by
-#'   `n` descending; zero rows if nothing is summarizable
+#' @return a tibble with ONE ROW PER `cpue_unit` -- `cpue_unit`,
+#'   `standardized` (logical; TRUE only when every row in that unit is), `n` --
+#'   ordered by `n` descending; zero rows if nothing is summarizable
 #' @export
 sp_unit_summary <- function(df_sp) {
   # WARN, never swallow. An earlier version returned an empty tibble on any
@@ -4468,7 +4553,21 @@ sp_unit_summary <- function(df_sp) {
       # volume for manta. One rule, one place.
       dplyr::mutate(standardized = as.logical(cpue_standardized)) |>
       dplyr::count(cpue_unit, standardized) |>
-      dplyr::collect(),
+      dplyr::collect() |>
+      # ONE ROW PER cpue_unit, which is what every caller assumes: both
+      # cpue_unit_selector_ui() (its `nrow(u) <= 1L` gate and its
+      # choiceValues) and sp_value_label() (`nrow(u) == 1L` vs. "(mixed
+      # units)") read nrow() as "how many units are present". count() keys on
+      # the (unit, flag) PAIR, so one unit carrying both cpue_standardized
+      # values -- reachable through prep_db.R's `ELSE COALESCE(mt.units,
+      # o.measurement_type)` fallback -- rendered a two-option radio whose
+      # second option was a silent no-op, under a "(mixed units)" legend for
+      # a single unit. all(), not any(): claim "effort-standardized" only
+      # when every row in that unit is.
+      dplyr::summarise(
+        standardized = all(standardized),
+        n            = sum(n),
+        .by          = cpue_unit),
     error = function(e) {
       warning("sp_unit_summary(): ", conditionMessage(e), call. = FALSE)
       NULL

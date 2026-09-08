@@ -1,6 +1,6 @@
 The CalCOFI Integrated Application is using the 
 [integrated database](https://calcofi.io/docs/db.html#integrated-database-ingestion-strategy) 
-constructed from 15 contributing datasets across CalCOFI, CCE-LTER, NOAA SWFSC, CDFW and the
+constructed from the contributing datasets of CalCOFI, CCE-LTER, NOAA SWFSC, CDFW and the
 Farallon Institute — see the **Data Sources** tab for the full list, citations, and licenses.
 
 This app is open-source with code found here:

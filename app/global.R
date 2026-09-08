@@ -468,7 +468,12 @@ ATTRIBUTIONS <- read_csv(
     # row, so it's stripped everywhere this table is read from. As a bonus,
     # "CC-BY-4.0 (confirmed ...)" was too long for is_short_license() to
     # recognize as a short license pill; stripped down to "CC-BY-4.0" it is.
-    license = str_squish(str_remove(license, "\\s*\\(confirmed[^)]*\\)\\s*$")))
+    #
+    # The rule itself lives in functions.R::strip_license_annotation() -- both
+    # annotation forms the CSV uses, and which licenses must survive untouched,
+    # are asserted in tests/test_attribution_fields.R rather than re-derived
+    # from this one call site.
+    license = strip_license_annotation(license))
 
 # The release's own dataset registry — provider + dataset + dataset_name — so a
 # dataset the map above has never heard of still names itself. prep_db.R keeps
