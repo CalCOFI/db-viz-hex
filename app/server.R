@@ -53,6 +53,149 @@ server <- function(input, output, session) {
     input$close_about,
     nav_select("outputPanel", rx$last_viz_tab %||% "Map", session = session),
     ignoreInit = TRUE)
+  observeEvent(
+    input$close_datasources,
+    nav_select("outputPanel", rx$last_viz_tab %||% "Map", session = session),
+    ignoreInit = TRUE)
+
+  # Data Sources touchpoints -- which dataset_key(s) back the currently
+  # APPLIED species + environmental variable. Feeds the left-panel box, the
+  # map title popover, the Download panel's citation block and the "Cite
+  # this data" modal.
+  #
+  # sp_keys reads rx$sp_ds_keys (see sp_dataset_keys()) -- the dataset_key(s)
+  # actually present in the already-filtered rx$df_sp -- rather than
+  # dataset_keys_for_species(), which looked up every dataset the taxon has
+  # EVER been recorded in from the raw taxonomy table. That ignored both the
+  # Datasets filter and the "Standardized as" pick, so picking e.g. "Pacific
+  # sardine -- CUFES Fish Eggs" showed SWFSC: Ichthyoplankton citations too,
+  # since sardine is also caught by that program's nets.
+  # groups, not just a flat key list, so the left-panel box can say WHICH
+  # half of the current view a source backs -- flattened by active_attrib_keys()
+  # below for callers (the modal, the map title popover) that just want the set.
+  active_attrib_groups <- reactive({
+    sp_keys <- rx$sp_ds_keys %||% character(0)
+    # only pull in the env dataset when a variable is actually being compared
+    # -- rx$params$env_var still holds its default ("temperature", a Bottle
+    # variable) even with the compare toggle off, which is what made
+    # CalCOFI: Bottle show up for a species that has nothing to do with it
+    env_key <- if (isTRUE(input$cmp_env_toggle))
+      dataset_key_for_env_var(rx$params$env_var %||% character(0))
+    else character(0)
+    # a dataset backing both (unlikely, but not impossible) is named once,
+    # under Species -- no reason to show it twice
+    list(sp = sp_keys, env = setdiff(env_key, sp_keys))
+  })
+
+  active_attrib_keys <- reactive({
+    g <- active_attrib_groups()
+    unique(c(g$sp, g$env))
+  })
+
+  # merges what used to be two separate boxes -- the plain provider list here,
+  # and a "Dataset citations & license" panel under Download that repeated
+  # the same datasets. Now shown together per source, so there's one place
+  # for "who provided this and how do I cite it" instead of two.
+  #
+  # Grouped under "Species / Taxa" / "Environment" sub-headings when Compare
+  # is on and both actually contribute a source -- previously this took one
+  # flat key list with no record of which half of the view each key backed,
+  # so e.g. a species citation and CalCOFI: Bottle (the env source) rendered
+  # as an undifferentiated list (user question 2026-09-07: "does this
+  # differentiate which is for the species/taxa and which for the
+  # environment" -- it did not). A single group renders with no sub-heading,
+  # same as before, so Compare-off stays exactly as plain as it was.
+  data_sources_box_ui <- function(groups) {
+    one_group <- function(keys) {
+      parts <- attrib_provider_parts(keys)
+      if (length(parts) == 0) return(NULL)
+      rows <- attrib_rows_for(keys)
+      lapply(names(parts), function(k) {
+        pp <- parts[[k]]
+        div(class = "cc-sources-item",
+            div(class = "cc-sources-ds", dataset_short_label(k)),
+            # one flowing line ("Programs: X | Providers: Y") rather than two
+            # stacked divs -- wraps on its own if it doesn't fit, same as any
+            # other text (2026-09-07 feedback: "if it fits ... put ... on one
+            # line").
+            div(class = "cc-sources-provider",
+                tags$strong("Programs: "), pp$program,
+                if (nzchar(pp$institution) && pp$institution != pp$program)
+                  tagList(" | ", tags$strong("Providers: "), pp$institution)),
+            dataset_citation_items(rows[rows$dataset_key == k, ]))
+      })
+    }
+    sp_items  <- one_group(groups$sp)
+    env_items <- one_group(groups$env)
+    if (is.null(sp_items) && is.null(env_items))
+      return(p(class = "cc-muted",
+               "Select a species or environmental variable to see its data source."))
+    both <- !is.null(sp_items) && !is.null(env_items)
+    div(
+      class = "cc-sources-box",
+      if (both) div(class = "cc-sources-group-label", "Species / Taxa"),
+      sp_items,
+      if (both) div(class = "cc-sources-group-label", "Environment"),
+      env_items,
+      actionLink("goto_datasources_from_panel", "View full citation & license →",
+                 class = "cc-sources-link"))
+  }
+
+  output$data_sources_box <- renderUI(data_sources_box_ui(active_attrib_groups()))
+
+  output$map_title_sp_pop <- renderUI({
+    # see active_attrib_keys() above -- same fix, same reasoning
+    keys  <- rx$sp_ds_keys %||% character(0)
+    parts <- attrib_provider_parts(keys)
+    if (length(parts) == 0)
+      return(p(class = "cc-muted", "No species selected yet."))
+    # "Programs:"/"Providers:" labeled lines instead of DATASET_LABELS'
+    # "SWFSC: ..." prefix plus a combined "Program (Institution)" string --
+    # that repeated the institution twice (2026-09-07 feedback).
+    tagList(lapply(names(parts), function(k) {
+      pp <- parts[[k]]
+      p(tags$strong(dataset_short_label(k)), tags$br(),
+        tags$strong("Programs: "), pp$program,
+        if (nzchar(pp$institution) && pp$institution != pp$program)
+          tagList(" | ", tags$strong("Providers: "), pp$institution))
+    }))
+  })
+
+  # Environment pill's own "Data source" popover -- mirrors map_title_sp_pop
+  # above exactly, just reading active_attrib_groups()$env (the env
+  # dataset_key, only populated while actually comparing -- see that
+  # reactive's own comment) instead of rx$sp_ds_keys. This pill's info icon
+  # never existed before (ui.R's cc-map-title-env had no popover at all, only
+  # the species one did), which is why "Environmental — Water temperature"
+  # showed no (i) next to it while "Species — Appendicularia" did (bug report
+  # 2026-09-07: "why no data source i icon for the environment").
+  output$map_title_env_pop <- renderUI({
+    keys  <- active_attrib_groups()$env
+    parts <- attrib_provider_parts(keys)
+    if (length(parts) == 0)
+      return(p(class = "cc-muted", "No environmental variable being compared."))
+    tagList(lapply(names(parts), function(k) {
+      pp <- parts[[k]]
+      p(tags$strong(dataset_short_label(k)), tags$br(),
+        tags$strong("Programs: "), pp$program,
+        if (nzchar(pp$institution) && pp$institution != pp$program)
+          tagList(" | ", tags$strong("Providers: "), pp$institution))
+    }))
+  })
+
+  observeEvent(input$btn_cite_data, {
+    trk("open_cite_data")
+    showModal(modal_cite_data(active_attrib_keys()))
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$goto_datasources_from_panel,
+    nav_select("outputPanel", "Data Sources", session = session),
+    ignoreInit = TRUE)
+
+  observeEvent(input$cite_modal_datasources_link, {
+    removeModal()
+    nav_select("outputPanel", "Data Sources", session = session)
+  }, ignoreInit = TRUE)
   # hexagons vs a named boundary layer — which layers people actually summarize
   # within is the signal for whether more are worth adding to the registry
   observeEvent(input$sel_agg_unit,
@@ -118,6 +261,19 @@ server <- function(input, output, session) {
     map_sp         = NULL,
     sp_scale       = NULL,  # scale list for sp map
     env_scale      = NULL,  # scale list for env map
+    # Last known client view {center, zoom} -- kept current by the
+    # unguarded map_before_view observer below (unlike the legend-drawing
+    # one right after it, this one has no req(rx$sp_scale, rx$env_scale)
+    # gate, since it just needs to be fresh whenever a widget rebuild reads
+    # it). Passed into map_sp_h3t()/map_env_h3t() as `view=` so a rebuild
+    # (env stat, dark mode, ...) re-opens the widget exactly where the user
+    # left it instead of re-fitting to the default extent every time (bug
+    # report 2026-09-07: "when togling env summary statistics the map view
+    # goes to 50km. i want the default to be 100km until someone pans in or
+    # out") -- NULL only until the very first moveend of a session, which is
+    # exactly when the DEFAULT_MAP_CENTER/DEFAULT_MAP_ZOOM fallback in
+    # functions_h3t.R should still apply.
+    last_map_view  = NULL,
     df_splot       = NULL,
     df_dprof       = NULL,
     filter_summary = NULL,
@@ -149,7 +305,7 @@ server <- function(input, output, session) {
       quarters         = 1:4,
       date_range       = min_max_date,
       depth_range      = c(0, 515),
-      include_children = TRUE,
+      include_children = FALSE,  # off by default -- see checkboxInput("ck_children", ...) in functions.R
       zones            = NULL,
       time_window      = NULL,
       dist_window      = NULL,
@@ -178,21 +334,32 @@ server <- function(input, output, session) {
   sp_map_spec <- function(df_sp, sel_name, sel_qtr, sel_date_range,
                           ck_children, datasets = NULL, poly_wkt = NULL,
                           spatial_layer = NULL, spatial_names = NULL,
-                          is_dark = TRUE) {
+                          cpue_unit = NULL, is_dark = TRUE) {
     if (USE_H3T) {
       # Resolve taxa HERE and hand the taxon_keys to the SQL builder, so the
       # tiles filter on exactly what get_sp() filtered on — same children walk
       # (ITIS for birds, WoRMS otherwise), same dataset checkboxes, same
       # spatial filter (WKT polygon, or a table-only sample_spatial layer).
+      #
+      # cpue_unit, likewise, must match do_apply_filters()'s own
+      # filter_cpue_unit(df_sp, cpue_chosen) -- this h3t branch never reads
+      # df_sp (that's classic-path only, in the else below), so without
+      # passing cpue_unit through here explicitly, "Standardized as" changed
+      # the legend title (a separate, correctly-reactive output) while these
+      # tiles kept averaging std_tally across every unit, unchanged (bug
+      # report 2026-09-08: "why does nothing change visually when you change
+      # standardized as"). See build_sp_sql()'s own doc for the full story.
       ids   <- resolve_sp_ids(sel_name, ck_children)
       sql   <- build_sp_sql(ids$taxon_keys, sel_qtr, sel_date_range,
                             datasets = datasets, poly_wkt = poly_wkt,
-                            spatial_layer = spatial_layer, spatial_names = spatial_names)
+                            spatial_layer = spatial_layer, spatial_names = spatial_names,
+                            cpue_unit = cpue_unit)
       stats <- fetch_h3t_stats(sql, H3T_RELEASE)
       if (debug) { message("sp stats:"); print(stats) }
       scale <- build_h3t_scale(stats, palette = \(n) hcl.colors(n, palette = "Viridis"))
       list(
-        map       = map_sp_h3t(h3t_tile_url(sql, H3T_RELEASE), scale, is_dark = is_dark),
+        map       = map_sp_h3t(h3t_tile_url(sql, H3T_RELEASE), scale,
+                                view = isolate(rx$last_map_view), is_dark = is_dark),
         layer_ids = "sp",
         scales    = rep(list(scale), length(res_range)))
     } else {
@@ -308,7 +475,7 @@ server <- function(input, output, session) {
       sel_qtr         <- 1:4
       sel_date_range  <- min_max_date
       sel_depth_range <- c(0, 515)
-      ck_children     <- TRUE
+      ck_children     <- FALSE  # off by default -- see checkboxInput("ck_children", ...) in functions.R
       env_stat        <- "mean"
 
       if (debug) message("Loading default species: ", sel_name)
@@ -321,6 +488,14 @@ server <- function(input, output, session) {
       df_sp  <- get_sp(sel_name, sel_qtr, sel_date_range, ck_children, datasets = sel_bio_ds)
       df_env <- get_env(sel_env_var, sel_qtr, sel_date_range, sel_depth_range[1], sel_depth_range[2])
 
+      # "Standardized as" -- see filter_cpue_unit(): no prior UI selection
+      # exists yet at startup, so this always falls back to the majority unit
+      cpue_units_all <- sp_unit_summary(df_sp)
+      cpue_chosen    <- if (nrow(cpue_units_all)) cpue_units_all$cpue_unit[1] else NA_character_
+      rx$cpue_units  <- cpue_units_all
+      rx$cpue_chosen <- cpue_chosen
+      df_sp <- filter_cpue_unit(df_sp, cpue_chosen)
+
       if (USE_H3T) {
         # h3t path: skip the 10-resolution sf preload entirely. hex data is
         # served on-demand per viewport; we only need a single color scale per
@@ -330,7 +505,7 @@ server <- function(input, output, session) {
         # the theme the page opened in (?theme= / cookie); isolated so a later toggle
         # restyles via the dark_toggle observer instead of rebuilding the map
         spec <- sp_map_spec(df_sp, sel_name, sel_qtr, sel_date_range, ck_children,
-                            datasets = sel_bio_ds,
+                            datasets = sel_bio_ds, cpue_unit = cpue_chosen,
                             is_dark = isolate(calcofi4r::cc_is_dark(input)))
         rx$map_sp       <- spec$map
         rx$sp_layer_ids <- spec$layer_ids
@@ -386,6 +561,10 @@ server <- function(input, output, session) {
       # unit breakdown alongside the data it describes, so the legend and the
       # sidebar note can never disagree with what is mapped
       rx$sp_units    <- sp_unit_summary(df_sp)
+      # dataset_key(s) actually contributing to df_sp -- see sp_dataset_keys():
+      # what Sources & Citations should name, not every dataset the taxon has
+      # ever appeared in
+      rx$sp_ds_keys  <- sp_dataset_keys(df_sp)
       rx$df_env      <- df_env
       rx$env_var     <- sel_env_var
       rx$lbl_env_var <- env_var_label(sel_env_var)
@@ -581,6 +760,7 @@ server <- function(input, output, session) {
       }
       map_env_obj <- map_env_h3t(rx$env_tile_url, rx$env_scale_single,
                                  env_stat_label, rx$lbl_env_var,
+                                 view    = rx$last_map_view,
                                  is_dark = isolate(calcofi4r::cc_is_dark(input)))
       rx$params$map_params$env_stat <- env_stat
       rx$env_stat <- env_stat
@@ -656,7 +836,18 @@ server <- function(input, output, session) {
   # parenthetical rank/scientific-name tail prep_db bakes in.
   output$map_title_sp <- renderText({
     nm <- rx$params$taxa %||% ""
-    sprintf("Species — %s", sub("\\s*\\(species:.*$", "", nm))
+    # taxa with no common name arrive as a bare "(rank: Scientific name)" --
+    # stripping just the "(rank: ...)" tail then leaves nothing before the
+    # dash, so fall back to the scientific name itself in that case. Mirrors
+    # ui.R's fmtName() JS, which handles the same two shapes for the dropdown.
+    ranks <- "species|subspecies|genus|family|order|class|phylum|kingdom|infraspecies|variety|forma|section|tribe|superfamily|suborder|infraorder"
+    bare_re <- paste0("^\\((?:", ranks, "): (.+)\\)$")
+    display <- if (grepl(bare_re, nm, perl = TRUE)) {
+      sub(bare_re, "\\1", nm, perl = TRUE)
+    } else {
+      sub(paste0("\\s*\\((?:", ranks, "):.*$"), "", nm, perl = TRUE)
+    }
+    sprintf("Species — %s", display)
   })
   output$map_title_env <- renderText({
     sprintf("Environmental — %s", rx$lbl_env_var %||% "")
@@ -845,7 +1036,7 @@ server <- function(input, output, session) {
     rx$sp_scale     <- rep(list(sp_scale),  length(res_range))
     rx$env_scale    <- rep(list(env_scale), length(res_range))
     rx$lbl_sp_value <- if (!is.na(sp_poly$unit))
-      paste0("Avg. CPUE (", sp_poly$unit, ")") else "Avg. CPUE"
+      paste0("Avg. CPUE (", fmt_cpue_unit(sp_poly$unit), ")") else "Avg. CPUE"
     rx$agg_unit <- agg_unit
     rx$env_stat <- env_stat
 
@@ -910,10 +1101,11 @@ server <- function(input, output, session) {
     if (!is.null(rx$df_sp) && !is.null(p$taxa)) {
       spec <- sp_map_spec(
         rx$df_sp, p$taxa,
-        p$sel_qtr %||% 1:4, p$date_range %||% min_max_date, p$ck_children %||% TRUE,
+        p$sel_qtr %||% 1:4, p$date_range %||% min_max_date, p$ck_children %||% FALSE,
         datasets      = isolate(input$sel_bio_ds),
         poly_wkt      = rx$spatial_wkt,
         spatial_layer = rx$spatial_layer, spatial_names = rx$spatial_names,
+        cpue_unit     = isolate(rx$cpue_chosen),
         is_dark       = is_dark)
       rx$map_sp       <- spec$map
       rx$sp_layer_ids <- spec$layer_ids
@@ -1047,36 +1239,30 @@ server <- function(input, output, session) {
          input$sel_env_stat),
     push_hexrange(), ignoreInit = TRUE)
 
-  # map zoom ----
-  observeEvent(input$map_before_view, {
-    req(rx$sp_scale, rx$env_scale)
-
-    view <- input$map_before_view
-    req(view$zoom)
-
-    # Side-by-side ("sync") layout: mapgl only locks the two maps together once
-    # one of them MOVES. On first load each fit_bounds'd its own container, which
-    # can leave them at slightly different zooms -- align them ONCE, right after
-    # the widget loads. Never on later moveends: doing it every time fought the
-    # user's pan/zoom (jump_to -> moveend -> jump_to ... a sync loop that froze
-    # the map). cmp_synced is reset by the map_rebuild observer below.
-    if (identical(rx$cmp_mode, "sync") && !cmp_synced() &&
-        length(view$center) == 2 && is.finite(view$zoom)) {
-      cmp_synced(TRUE)
-      maplibre_compare_proxy("map", map_side = "after") |>
-        jump_to(center = view$center, zoom = view$zoom)
+  # draw_legends ----
+  # Both map legends. Factored out of the map-move observer below, which used
+  # to be the ONLY place they were drawn -- so they were entirely gated on an
+  # actual moveend ever firing. Turning Compare on, or a fresh species/env
+  # selection, updates rx$sp_scale/rx$env_scale without moving the map at
+  # all, so the environmental legend (and, after a fresh selection, the
+  # species one) just never appeared until the user happened to pan or zoom
+  # (bug report 2026-09-07: "the environment legend isnt showing up until
+  # click into map"). Mirrors push_hexrange() above, which already solved
+  # the identical problem for the hover readout -- same i = NULL fallback,
+  # same "call it on every relevant rx$ change, not just on moveend".
+  draw_legends <- function(i = NULL) {
+    if (is.null(rx$sp_scale) || is.null(rx$env_scale)) return(invisible())
+    if (is.null(i)) {
+      z <- isolate(input$map_before_view$zoom)
+      i <- if (is.null(z) || !is.finite(z)) 1L
+           else findInterval(z, zoom_breaks, rightmost.closed = TRUE)
     }
-
-    z <- view$zoom
-    i <- findInterval(z, zoom_breaks, rightmost.closed = TRUE)
-
-    # Guard against weird zoom values
-    if (i < 1 || i > length(rx$sp_scale)) return(NULL)
+    if (i < 1 || i > length(rx$sp_scale)) return(invisible())
 
     sp_scale  <- rx$sp_scale[[i]]
     env_scale <- rx$env_scale[[i]]
 
-    env_stat <- input$sel_env_stat %||% "mean"
+    env_stat     <- input$sel_env_stat %||% "mean"
     lbl_env_stat <- names(which(env_stat_choices == env_stat))
 
     # legend as a near-opaque themed card -- the old 50%-white wash was
@@ -1136,12 +1322,102 @@ server <- function(input, output, session) {
           add         = TRUE
         )
     }
+  }
+
+  observeEvent(
+    list(rx$sp_scale, rx$env_scale, rx$lbl_env_var, rx$lbl_sp_value,
+         input$sel_env_stat),
+    draw_legends(), ignoreInit = TRUE)
+
+  # Re-push both legends after a FULL widget rebuild -- output$map's own two
+  # non-isolated deps are map_rebuild() and rx$cmp_mode (see its render
+  # above); either one throws away the live compare widget instance that any
+  # earlier draw_legends() proxy call was targeting, so whatever legend was
+  # drawn before the rebuild is gone with it. Turning Compare on is exactly
+  # this case: it flips rx$cmp_mode, which rebuilds the widget, but doesn't
+  # necessarily touch rx$sp_scale/rx$env_scale (those may already be set from
+  # before Compare was ever toggled on), so the observer just above never
+  # refires -- the environment legend then stayed missing until a pan/zoom
+  # happened to call draw_legends() again via the map-move observer below
+  # (bug report 2026-09-08, recurrence of "the environment legend isnt
+  # showing up until click into map", 2026-09-07).
+  #
+  # This used to route through session$onFlushed (defer until the new
+  # widget's initial payload has been flushed to the client). That only
+  # guarantees the R-side message reached the browser -- it says nothing
+  # about whether the browser has actually finished creating the WebGL
+  # context and loading the maplibre GL style for the NEW map pair, which is
+  # an async step of its own. A legend proxy call that lands before that
+  # finishes is a silent no-op, and that race is exactly what made the
+  # legend flicker / intermittently require a pan-zoom to reappear (bug
+  # report 2026-09-07: "why does the legend flicker...you need to click into
+  # the map and move the view to have it appear sometimes? why doesnt it
+  # just always appear when map view is open?").
+  #
+  # ui.R's wire() (the cross-pane hex-compare script) already has to poll
+  # for each fresh widget instance's underlying maplibre GL JS map objects,
+  # and now waits for both to genuinely fire 'load' before signaling
+  # Shiny.setInputValue('cc_map_ready', ...) -- a real "the new maps are
+  # ready for proxy calls" event instead of a guess about Shiny's own flush
+  # timing. Listen for that instead.
+  observeEvent(input$cc_map_ready, {
+    draw_legends()
+  }, ignoreInit = TRUE)
+
+  # Cache the client's current view on every moveend, unconditionally --
+  # see rx$last_map_view's own comment above. Deliberately separate from the
+  # legend-lookup observer right below (which req()s rx$sp_scale/env_scale
+  # and bails on plenty of early/invalid views): a full map rebuild can
+  # happen before those are ready, and this needs to have already recorded
+  # SOME view by the time it does, not share that observer's gate.
+  observeEvent(input$map_before_view, {
+    view <- input$map_before_view
+    if (!is.null(view$zoom) && is.finite(view$zoom) &&
+        length(view$center) == 2 && all(is.finite(unlist(view$center))))
+      rx$last_map_view <- list(center = view$center, zoom = view$zoom)
+  }, ignoreInit = TRUE)
+
+  # map zoom ----
+  observeEvent(input$map_before_view, {
+    req(rx$sp_scale, rx$env_scale)
+
+    view <- input$map_before_view
+    req(view$zoom)
+
+    # Side-by-side ("sync") layout: mapgl only locks the two maps together once
+    # one of them MOVES. On first load each fit_bounds'd its own container, which
+    # can leave them at slightly different zooms -- align them ONCE, right after
+    # the widget loads. Never on later moveends: doing it every time fought the
+    # user's pan/zoom (jump_to -> moveend -> jump_to ... a sync loop that froze
+    # the map). cmp_synced is reset by the map_rebuild observer below.
+    if (identical(rx$cmp_mode, "sync") && !cmp_synced() &&
+        length(view$center) == 2 && is.finite(view$zoom)) {
+      cmp_synced(TRUE)
+      maplibre_compare_proxy("map", map_side = "after") |>
+        jump_to(center = view$center, zoom = view$zoom)
+    }
+
+    z <- view$zoom
+    i <- findInterval(z, zoom_breaks, rightmost.closed = TRUE)
+
+    # Guard against weird zoom values
+    if (i < 1 || i > length(rx$sp_scale)) return(NULL)
+
+    draw_legends(i)
 
     # hand the two value ranges + labels to the cross-pane hover readout
     # (ui.R script): raw abundance and raw degrees C are not comparable, but
     # "72% of the way up its own colour scale" vs "28% up its own" is.
     push_hexrange(i)
   })
+
+  # cpue_unit_selector ----
+  # The "Standardized as" radio group -- only appears when the current
+  # taxon/filter selection is actually published in more than one cpue_unit
+  # (rx$cpue_units/rx$cpue_chosen are set alongside rx$df_sp; see
+  # filter_cpue_unit()). Applies to Map, Time Series, Scatterplot and Depth
+  # Profile alike, since all four read the already-filtered rx$df_sp.
+  output$cpue_unit_selector <- renderUI(cpue_unit_selector_ui(rx$cpue_units, rx$cpue_chosen))
 
   # poly_note ----
   # What the polygon summary actually covers: how many of the layer's polygons
@@ -1170,7 +1446,7 @@ server <- function(input, output, session) {
       if (nrow(u) <= 1) {
         return(div(
           class = "cc-unit-note",
-          sprintf("Hexagon values: average %s%s.", u$cpue_unit[1],
+          sprintf("Hexagon values: average %s%s.", fmt_cpue_unit(u$cpue_unit[1]),
                   if (isTRUE(u$standardized[1])) " (effort-standardized)"
                   else " (published as-is, not effort-standardized)")))
       }
@@ -1184,7 +1460,7 @@ server <- function(input, output, session) {
           lapply(seq_len(nrow(u)), function(i) tags$li(
             tags$strong(sprintf("%s obs (%.0f%%)",
                                 format(u$n[i], big.mark = ","), 100 * u$n[i] / n_tot)),
-            tags$span(class = "cc-unit-unit", u$cpue_unit[i]),
+            tags$span(class = "cc-unit-unit", fmt_cpue_unit(u$cpue_unit[i])),
             if (isTRUE(u$standardized[i]))
               tags$span(class = "cc-unit-std", "effort-standardized")))),
         if (any(!u$standardized)) div(
@@ -1204,7 +1480,7 @@ server <- function(input, output, session) {
                   format(n_with, big.mark = ","), format(n_tot, big.mark = ","))),
       if (!is.na(sp_poly$unit)) div(
         class = "mt-1",
-        sprintf("Species values are averaged in %s.", sp_poly$unit),
+        sprintf("Species values are averaged in %s.", fmt_cpue_unit(sp_poly$unit)),
         if (sp_poly$n_excluded > 0) sprintf(
           " %s observation(s) in %d other unit(s) are excluded — averaging across units is not a quantity.",
           format(sp_poly$n_excluded, big.mark = ","), nrow(sp_poly$units) - 1L))
@@ -1305,17 +1581,20 @@ server <- function(input, output, session) {
   # its own dialog (modal_spatial_filter(), below) reached via the "Layers"
   # row's "Change" link -- so this observer only needs to show the modal.
   observeEvent(input$edit_filters, {
-    # carry the currently-applied depth/quarter/date-range across a reopen --
-    # the modal is rebuilt from scratch each time, so anything not passed
-    # here silently resets to its default (see modal_edit_filters() docs)
+    # carry the currently-applied depth/quarter/date-range/datasets across a
+    # reopen -- the modal is rebuilt from scratch each time, so anything not
+    # passed here silently resets to its default (see modal_edit_filters()
+    # docs). bio_datasets was missing from this list -- do_apply_filters()
+    # always wrote the applied selection to rx$params$bio_datasets, but
+    # nothing ever read it back out on reopen, so dataset_list_picker_ui()
+    # fell back to its own hardcoded "every dataset" default every time
+    # (bug report 2026-09-07: filtering to one dataset, applying, then
+    # reopening "Edit filters" showed all 10 checked again).
     showModal(modal_edit_filters(
-      depth_range = rx$params$depth_range %||% c(0, 515),
-      qtr         = rx$params$sel_qtr     %||% 1:4,
-      date_range  = rx$params$date_range  %||% min_max_date,
-      # the dataset narrowing too (a ?datasets= link, or the user's own
-      # choice) -- rendering the tree with every box checked made
-      # input$sel_bio_ds all-datasets the moment the modal opened
-      bio_ds      = isolate(bio_ds_selected())))
+      depth_range  = rx$params$depth_range  %||% c(0, 515),
+      qtr          = rx$params$sel_qtr      %||% 1:4,
+      date_range   = rx$params$date_range   %||% min_max_date,
+      bio_datasets = rx$params$bio_datasets %||% d_bio_datasets$dataset_key))
   })
 
   # edit_spatial -> modal_spatial_filter(), spatial_filter_map ----
@@ -1323,10 +1602,16 @@ server <- function(input, output, session) {
   # exact same spatial_filter_map/tbl_places outputs the old Spatial TAB
   # rendered on modal open -- only the trigger id changed.
   observeEvent(input$edit_spatial, {
-    # reopen on the category the picked names belong to, so the select and
-    # rx$sel_places cannot disagree
+    # reopen on the category the picked names belong to (rx$sel_places_cat,
+    # from main) when one is set, falling back to whatever the user last had
+    # the dropdown on otherwise -- read BEFORE showModal() rebuilds
+    # sel_places_cat's <select> (and so resets its input value): this is
+    # still whatever the user last had it set to (bug report 2026-09-08:
+    # reopening "Layers" > "Change" always snapped the Category dropdown
+    # back to "CalCOFI Zones"). See modal_spatial_filter()'s own doc for
+    # the full story.
     showModal(modal_spatial_filter(
-      cat = rx$sel_places_cat %||% input$sel_places_cat %||% "CalCOFI Zones"))
+      selected_cat = rx$sel_places_cat %||% input$sel_places_cat %||% "CalCOFI Zones"))
 
     output$spatial_filter_map <- renderMaplibre({
       if (input$sel_places_cat == "Custom") {
@@ -1426,7 +1711,8 @@ server <- function(input, output, session) {
   # switching category drops the names picked in the previous one: they are
   # matched against the active category's polygons at submit, and the table /
   # map highlight for the new category cannot show them anyway. Reopening the
-  # dialog on the same category (modal_spatial_filter(cat = )) is not a change.
+  # dialog on the same category (modal_spatial_filter(selected_cat = )) is not
+  # a change.
   observeEvent(input$sel_places_cat, {
     if (!is.null(rx$sel_places_cat) &&
         !identical(input$sel_places_cat, rx$sel_places_cat)) {
@@ -1550,7 +1836,23 @@ server <- function(input, output, session) {
   # modal and auto-apply on change, per the redesign -- see the observers
   # right below this function). The body itself is UNCHANGED from the
   # original submit handler: only the trigger moved, not the query logic.
-  do_apply_filters <- function() {
+  # reset_* params, added 2026-09-08: an OVERRIDE for the value normally read
+  # from input$sel_qtr / input$sel_date_range / input$sel_depth_range /
+  # input$sel_bio_ds. Exists ONLY for reset_filters (below) to call this
+  # function immediately after resetting those widgets ("reset all should
+  # auto apply"). Reading input$sel_qtr etc. right after update*Input()
+  # would NOT see the reset value yet -- update*Input() only sends a message
+  # asking the CLIENT to change the widget; input$sel_qtr only becomes the
+  # new value once the browser round-trips it back as a fresh input message,
+  # a separate reactive flush this same function call happens well before.
+  # Calling do_apply_filters() straight after update*Input() would silently
+  # apply the OLD, pre-reset filters while still closing the modal like a
+  # successful reset -- worse than the plain "does nothing until Apply" gap
+  # it replaces. Passing the just-set values in directly sidesteps that
+  # round-trip entirely; every other caller omits these and gets the normal
+  # input-driven behavior, unchanged.
+  do_apply_filters <- function(reset_qtr = NULL, reset_date_range = NULL,
+                               reset_depth_range = NULL, reset_bio_datasets = NULL) {
     if (debug) message("\n=== DATA SELECTION SUBMITTED ===\n")
 
     # collect input selections
@@ -1566,10 +1868,11 @@ server <- function(input, output, session) {
     # loader uses.
     sel_name        <- input$sel_name
     sel_env_var     <- input$sel_env_var
-    sel_qtr         <- input$sel_qtr        %||% rx$params$sel_qtr     %||% 1:4
-    sel_date_range  <- input$sel_date_range %||% rx$params$date_range  %||% min_max_date
-    sel_depth_range <- input$sel_depth_range %||% rx$params$depth_range %||% c(0, 515)
-    ck_children     <- input$ck_children    %||% rx$params$ck_children %||% TRUE
+    sel_qtr         <- reset_qtr         %||% input$sel_qtr        %||% rx$params$sel_qtr     %||% 1:4
+    sel_date_range  <- reset_date_range  %||% input$sel_date_range %||% rx$params$date_range  %||% min_max_date
+    sel_depth_range <- reset_depth_range %||% input$sel_depth_range %||% rx$params$depth_range %||% c(0, 515)
+    sel_bio_ds      <- reset_bio_datasets %||% input$sel_bio_ds
+    ck_children     <- input$ck_children    %||% rx$params$ck_children %||% FALSE
 
     if (debug) message("Selections: sp_name =", sel_name, ", env_var =", sel_env_var)
 
@@ -1599,7 +1902,7 @@ server <- function(input, output, session) {
       list(taxa = sel_name, quarters = sel_qtr, date_beg = sel_date_range[1],
            date_end = sel_date_range[2], include_children = ck_children),
       get_sp(sel_name, sel_qtr, sel_date_range, ck_children,
-             datasets = input$sel_bio_ds))
+             datasets = sel_bio_ds))
     df_env <- calcofi4r::cc_track_query(session, "map_query_env",
       list(env_var = sel_env_var, quarters = sel_qtr, date_beg = sel_date_range[1],
            date_end = sel_date_range[2], depth_min = sel_depth_range[1],
@@ -1699,9 +2002,39 @@ server <- function(input, output, session) {
       return(NULL)
     }
 
+    # "Standardized as" -- see filter_cpue_unit(): keep the user's current pick
+    # ONLY when re-filtering the SAME taxa selection (e.g. changing quarter or
+    # depth range); a genuine species change always resets to the new
+    # species' own majority unit. Without the same_taxa check, a unit that
+    # merely exists as a tiny minority for the new species (say 4 raw "count"
+    # rows out of thousands) would keep winning just because it happened to
+    # match the previous species' chosen unit by name -- e.g. switching from
+    # a species standardized as count/100m^3 to one that's 98% count/10m^2
+    # kept showing count/100m^3 because 2% of the new species' rows happened
+    # to carry that same unit string. rx$params$taxa still holds the
+    # PREVIOUS selection here (it isn't overwritten until below), so
+    # comparing it against sel_name (this call's new selection) is exactly
+    # "did the species change" -- (isolate(): this observer must not re-fire
+    # just because do_apply_filters() itself is about to update
+    # rx$cpue_chosen/rx$params$taxa below)
+    cpue_units_all <- sp_unit_summary(df_sp)
+    cur_cpue_unit  <- isolate(input$sel_cpue_unit)
+    same_taxa      <- identical(sel_name, isolate(rx$params$taxa))
+    cpue_chosen    <- if (same_taxa && !is.null(cur_cpue_unit) &&
+                           cur_cpue_unit %in% cpue_units_all$cpue_unit)
+      cur_cpue_unit
+    else if (nrow(cpue_units_all)) cpue_units_all$cpue_unit[1]
+    else NA_character_
+    rx$cpue_units  <- cpue_units_all
+    rx$cpue_chosen <- cpue_chosen
+    df_sp <- filter_cpue_unit(df_sp, cpue_chosen)
+
     # store shared data (still lazy tables)
     rx$df_sp       <- df_sp
     rx$sp_units    <- sp_unit_summary(df_sp)
+    # see sp_dataset_keys() -- keeps Sources & Citations in sync with the
+    # Datasets filter and the "Standardized as" pick, not just the taxon
+    rx$sp_ds_keys  <- sp_dataset_keys(df_sp)
     rx$df_env      <- df_env
     rx$env_var     <- sel_env_var
     rx$lbl_env_var <- env_var_label(sel_env_var)
@@ -1718,7 +2051,7 @@ server <- function(input, output, session) {
     rx$params$ck_children <- ck_children
     # so the download README and the usage log record which datasets the
     # numbers came from, not just which taxa
-    rx$params$bio_datasets <- input$sel_bio_ds
+    rx$params$bio_datasets <- sel_bio_ds
     if (debug) message("Stored reactive data: df_sp, df_env, lbl_env_var =", rx$lbl_env_var)
 
     # build filter summary
@@ -1731,7 +2064,13 @@ server <- function(input, output, session) {
       drawn_polygon,
       rx$sel_places,
       ck_children,
-      bio_datasets = bio_ds_selected())
+      # sel_bio_ds, NOT bio_ds_selected(): on the reset_filters path the
+      # reset value arrives as reset_bio_datasets and input$sel_bio_ds has
+      # not round-tripped yet (see the reset_* note on this function), so
+      # bio_ds_selected() reported the PRE-reset datasets in a summary
+      # describing a query built from the reset ones. Every other argument
+      # here is already the local sel_*.
+      bio_datasets = sel_bio_ds)
 
     # compact one-line chip shown next to "Edit filters" in the top bar
     # (functions.R::chip_summary_text()) -- Temporal/Depth/Spatial only,
@@ -1752,8 +2091,9 @@ server <- function(input, output, session) {
     if (debug) message("Generating species map...\n")
     spec <- sp_map_spec(
       df_sp, sel_name, sel_qtr, sel_date_range, ck_children,
-      datasets = input$sel_bio_ds, poly_wkt = spatial_wkt,
+      datasets = sel_bio_ds, poly_wkt = spatial_wkt,
       spatial_layer = spatial_layer, spatial_names = spatial_names,
+      cpue_unit = cpue_chosen,
       is_dark  = input$dark_toggle == "dark")
     rx$map_sp       <- spec$map
     rx$sp_layer_ids <- spec$layer_ids
@@ -1826,6 +2166,25 @@ server <- function(input, output, session) {
 
   observeEvent(input$sel_env_var, {
     if (isTRUE(input$cmp_env_toggle)) do_apply_filters()
+  }, ignoreInit = TRUE)
+
+  # BUG FIX: "Include taxonomic children" (ck_children) had no observer of its
+  # own -- toggling it silently did nothing until some OTHER control (taxon,
+  # env var) happened to re-run do_apply_filters() afterwards, which then
+  # picked up the new value. Mirrors the sel_name auto-apply above.
+  observeEvent(input$ck_children, {
+    req(input$sel_name)
+    do_apply_filters()
+  }, ignoreInit = TRUE)
+
+  # "Standardized as" -- re-run with the newly picked cpue_unit. Guarded so
+  # this doesn't also fire from do_apply_filters() re-rendering the control
+  # with a DIFFERENT selection than the user made (a fallback to the majority
+  # unit, e.g. because the previous pick has no rows for a new taxon).
+  observeEvent(input$sel_cpue_unit, {
+    req(input$sel_cpue_unit)
+    if (identical(input$sel_cpue_unit, rx$cpue_chosen)) return()
+    do_apply_filters()
   }, ignoreInit = TRUE)
 
   # plotly_click -> ... ----
@@ -2113,10 +2472,35 @@ server <- function(input, output, session) {
   })
 
   # reset_filters -> defaults ----
-  # modal_edit_filters()'s "Reset all" link. Restores every input in the panel
-  # to its original startup default; does NOT call do_apply_filters() itself
-  # (the modal is still open, same as changing any field by hand) -- the user
-  # still clicks Apply, so nothing is queried until they confirm.
+  # modal_edit_filters()'s "Reset all" link. Restores every input IN THAT
+  # PANEL to its original startup default, then applies them: it calls
+  # do_apply_filters() with the reset values as overrides, and that function
+  # ends in removeModal(). (This paragraph used to say the opposite -- that
+  # nothing was queried until the user clicked Apply -- which was true before
+  # "reset all should auto apply"; see the note on the do_apply_filters()
+  # call at the bottom of this observer.)
+  #
+  # "in that panel" is the scope, and it is deliberate: input$sel_map_area
+  # ("Restrict map to area") lives in Plot Options and input$ck_children in
+  # the taxa combo, so neither is reset here and do_apply_filters() reads
+  # both live. An area restriction therefore SURVIVES a "Reset all" and the
+  # re-applied query is still clipped to it (the third spatial branch in
+  # do_apply_filters). That is consistent with those controls being outside
+  # this modal, but it is not what "Reset all" reads like from the outside --
+  # worth revisiting if it is reported as surprising.
+  #
+  # rx$sel_places was missing here (bug report 2026-09-08: "reset all
+  # doesn't work" -- Datasets/Depth/Time all correctly went back to their
+  # defaults, but "Layers" kept showing "CalCOFI Zones, 2 selected"). Zones
+  # picked in the separate "Layers" > "Change" dialog are staged in
+  # rx$sel_places, not a plain Shiny input, so update*Input() never touches
+  # it -- it needs clearing directly, the same as any other staged filter
+  # this observer resets. output$spatial_layers_summary reads rx$sel_places
+  # for its "N selected" count, so this alone fixes what was visibly stuck;
+  # a custom drawn polygon is a separate case (read live off the map's own
+  # draw layer only at Apply time, functions.R::get_drawn_features()) with
+  # no staged value here to clear -- clearing it means removing the drawn
+  # shape from that map, in the "Layers" dialog itself.
   observeEvent(input$reset_filters, {
     updateCheckboxGroupInput(session, "sel_bio_ds", selected = d_bio_datasets$dataset_key)
     updateSliderInput(session, "sel_depth_range", value = c(0, 515))
@@ -2124,6 +2508,27 @@ server <- function(input, output, session) {
     updateDateRangeInput(
       session, "sel_date_range",
       start = min_max_date[1], end = min_max_date[2])
+    rx$sel_places     <- character(0)
+    # sel_places_cat (main): tracks which category rx$sel_places' names
+    # belong to, and is what clears rx$sel_places automatically on a category
+    # SWITCH (see the input$sel_places_cat observer above) -- clear it here
+    # too, or a stale category left over from before "Reset all" would still
+    # be sitting there for that observer to compare against.
+    rx$sel_places_cat <- NULL
+
+    # "Reset all" should behave like Apply, not just reset the widgets and
+    # wait for a separate click. The update*Input() calls above only ask the
+    # BROWSER to change each widget -- input$sel_qtr etc. won't reflect the
+    # reset value until the client round-trips it back, which hasn't happened
+    # yet at this point in the same server-side execution. Calling
+    # do_apply_filters() with no arguments here would silently re-apply the
+    # OLD pre-reset filters while still closing the modal. Passing the reset
+    # values straight in as overrides sidesteps that round-trip.
+    do_apply_filters(
+      reset_qtr          = 1:4,
+      reset_date_range   = min_max_date,
+      reset_depth_range  = c(0, 515),
+      reset_bio_datasets = d_bio_datasets$dataset_key)
   })
 
   # Summary Statistics: a tight Species / Environment matrix -- label column
@@ -2162,8 +2567,17 @@ server <- function(input, output, session) {
   # the Map panel's sections collapse via a CSS class (display:none), which
   # Shiny would read as "hidden" and leave these outputs unrendered until the
   # user opens the section AND a reactive flush notices -- keep them live so a
-  # collapsed section opens already populated
-  for (.o in c("filter_summary", "summary_statistics", "taxa_tree", "poly_note"))
+  # collapsed section opens already populated. map_title_sp_pop and
+  # data_sources_box have the same problem via a different hiding mechanism:
+  # the popover's content div starts display:none until clicked open, and the
+  # left-panel Sources & Citations section can be collapsed the same way --
+  # so both went stale, showing whichever species/dataset was selected the
+  # last time they were actually visible (bug report 2026-09-07: "why is
+  # abrali data sourced greyed out but you can see citation for CUFES" -- the
+  # popover was still showing an earlier selection's citation, not the
+  # current one, while the always-live left-panel box already had it right).
+  for (.o in c("filter_summary", "summary_statistics", "taxa_tree", "poly_note",
+               "map_title_sp_pop", "map_title_env_pop", "data_sources_box"))
     outputOptions(output, .o, suspendWhenHidden = FALSE)
 
   # download_data ----

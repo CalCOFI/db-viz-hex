@@ -264,7 +264,19 @@ h3t_release_of <- function(path) {
   if (!nzchar(tgt)) tgt <- path          # not a symlink: read the filename itself
   m <- regmatches(basename(tgt),
                   regexpr("v[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}", basename(tgt)))
-  if (length(m)) m else ""
+  if (length(m)) return(m)
+  # Filename carried no version -- happens when "latest" is a real copy rather
+  # than a symlink (e.g. a OneDrive-synced checkout: OneDrive doesn't sync
+  # symlinks, so a dev machine can end up with a plain calcofi_latest.duckdb
+  # that is just a copy). prep_db.R also drops a manifest next to its build
+  # outputs; fall back to that so the header badge still shows a release
+  # instead of silently going blank.
+  manifest <- file.path(dirname(path), ".build", "latest.txt")
+  if (file.exists(manifest)) {
+    v <- trimws(readLines(manifest, n = 1, warn = FALSE))
+    if (nzchar(v)) return(v)
+  }
+  ""
 }
 # The frozen release every number in this app comes from. Shown in the header
 # (ui.R) and reused below as the tile cache-buster.
@@ -278,6 +290,15 @@ h3t_release_of <- function(path) {
 # cannot drift there.
 DB_RELEASE  <- h3t_release_of(db_path)
 h3t_release <- Sys.getenv("CALCOFI_H3T_RELEASE", DB_RELEASE)
+
+# This app's own public URL -- named in the "Cite this data" modal and the
+# download bundle's CITATION.md (functions.R) so a citation built from an
+# export says which CalCOFI tool produced it, the way calcofi.io/station
+# does for the Station Data Portal. TODO(betty): confirm this is the actual
+# deployed path before shipping -- guessed from the 2026-09-07 conversation
+# ("like https://app.calcofi.io/hex/ (vs .../station/)"), not read from any
+# deploy config in this repo.
+APP_CITE_URL <- Sys.getenv("CALCOFI_APP_CITE_URL", "https://app.calcofi.io/hex/")
 
 # Feedback dialog (functions.R::modal_feedback + app/www/cc-feedback.js) posts
 # the note + screenshot CLIENT-SIDE to a Google Apps Script (generated once into
@@ -327,19 +348,29 @@ d_sp <- tbl(con, "species") |>
     tbl(con, "taxon"),
     by = join_by(taxon_key == taxonID)
   ) |>
+  select(scientific_name, common_name, taxonRank) |>
+  # collect() before the string mutations below -- substr()/nchar() don't
+  # translate to this backend's SQL when nested (paste0(toupper(substr(...)),
+  # substr(..., nchar(...))) errored with "stop must be a whole number, not
+  # a <sql> object"), so do the plain-R string work after pulling the rows
+  collect() |>
   mutate(
     rank_part = ifelse(
       is.na(taxonRank) | taxonRank == "",
       "",
       paste0(tolower(taxonRank), ": ")),
+    # capitalize just the first letter -- some common names come through
+    # lowercase from the taxonomy registry ("diatoms", "dinoflagellates")
+    common_name = ifelse(
+      is.na(common_name) | common_name == "",
+      common_name,
+      paste0(toupper(substr(common_name, 1, 1)), substr(common_name, 2, nchar(common_name)))),
     name_part = ifelse(
       is.na(common_name) | common_name == "",
       "",
       paste0(common_name, " ")),
     name = paste0(name_part, "(", rank_part, scientific_name, ")")
   ) |>
-  select(scientific_name, name) |>
-  collect() |>
   distinct(scientific_name, .keep_all = TRUE)
 
 sp_names <- sort(d_sp$name)
@@ -405,15 +436,44 @@ DATASET_LABELS <- c(
   "calcofi_dic"                    = "CalCOFI: DIC (carbon)",
   "cce-lter_picoplankton-bacteria" = "CCE-LTER: Picoplankton & bacteria",
   "swfsc_ichthyo"                  = "SWFSC: Ichthyoplankton",
-  "swfsc_cufes"                    = "SWFSC: CUFES (egg pump)",
+  "swfsc_cufes"                    = "SWFSC: Fish Egg Pump (CUFES)",
   "calcofi_phytoplankton"          = "CalCOFI: Phytoplankton",
   "cce-lter_zooscan"               = "CCE-LTER: ZooScan",
   "cce-lter_euphausiids"           = "CCE-LTER: Euphausiids",
   "cce-lter_zoodb"                 = "CCE-LTER: ZooDB",
   "farallon_bird-mammal"           = "Farallon: Seabirds & mammals",
   "calcofi_phyllosoma"             = "CalCOFI: Phyllosoma",
-  "sio_mesopelagic-fish"           = "SIO: Mesopelagic fish",
+  "sio_mesopelagic-fish"           = "UCSD SIO: Mesopelagic fish",
   "cdfw_dungeness-crab"            = "CDFW: Dungeness crab megalopae")
+
+# Citation / license / provider registry for the Data Sources tab and every
+# other attribution touchpoint (search subtitle, left-panel box, map popover,
+# download panel, "Cite this data" modal). One row per contributing SOURCE,
+# not per dataset_key -- a bundled dataset like swfsc_ichthyo or
+# farallon_bird-mammal has several rows sharing one dataset_key. Editing this
+# CSV is the entire workflow for fixing or adding a citation; no code change
+# needed. See functions.R::attrib_rows_for()/attrib_provider_summary()/
+# attrib_citation_html()/attribution_table_html().
+ATTRIBUTIONS <- read_csv(
+  here("app/data/attributions.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(
+    # the CSV's `license` column carries editorial "how/when this was
+    # verified" annotations for the curator's own reference -- e.g.
+    # "CC-BY-4.0 (confirmed via calcofi.org/..., 2026-09-07)" or "...
+    # (confirmed directly from ERDDAP metadata, 2026-09-07)". Useful in the
+    # CSV, but it's not part of the actual license/disclaimer text and
+    # shouldn't show to users -- strip it here rather than hand-editing every
+    # row, so it's stripped everywhere this table is read from. As a bonus,
+    # "CC-BY-4.0 (confirmed ...)" was too long for is_short_license() to
+    # recognize as a short license pill; stripped down to "CC-BY-4.0" it is.
+    #
+    # The rule itself lives in functions.R::strip_license_annotation() -- both
+    # annotation forms the CSV uses, and which licenses must survive untouched,
+    # are asserted in tests/test_attribution_fields.R rather than re-derived
+    # from this one call site.
+    license = strip_license_annotation(license))
 
 # The release's own dataset registry — provider + dataset + dataset_name — so a
 # dataset the map above has never heard of still names itself. prep_db.R keeps
@@ -488,6 +548,9 @@ d_env_vars <- dbGetQuery(
       is.na(var_name) | var_name == "",
       str_to_sentence(str_replace_all(measurement_type, "_", " ")),
       var_name),
+    # capitalize just the first letter -- NOT str_to_sentence(), which would
+    # lowercase correctly-cased terms already embedded in the name (QC'd, pH)
+    var_name = paste0(toupper(substr(var_name, 1, 1)), substr(var_name, 2, nchar(var_name))),
     label = ifelse(
       is.na(units) | units == "" | units == "NA",
       var_name, paste0(var_name, " (", pretty_units(units), ")"))) |>
@@ -572,10 +635,11 @@ d_bio_datasets <- dbGetQuery(
   mutate(label = sprintf("%s — %s obs, %d taxa",
                          ds_name, format(n_obs, big.mark = ","), n_taxa))
 
-# Coarse taxa-dataset groups for the Filters panel's "Datasets" tree
-# (functions.R::dataset_category_tree_ui()) — the redesign groups the 10
-# datasets into 4 everyday categories (Fish / Crustaceans / Plankton /
-# Birds & Mammals) instead of listing them flat, per the approved mockup.
+# Coarse taxa-dataset groups for the Filters panel's "Datasets" list
+# (functions.R::dataset_list_picker_ui()) — sorts the 10 datasets into 4
+# everyday categories (Fish / Crustaceans / Plankton / Birds & Mammals) and
+# tags each row with its category, per the mockup Betty picked (flat list,
+# no search box, category shown as a tag rather than a grouping header).
 # This is a DISPLAY grouping only: `sel_bio_ds` still stores individual
 # dataset_key values exactly as it always has, so nothing downstream of it
 # (get_sp(), the SQL builders) needs to know these categories exist.

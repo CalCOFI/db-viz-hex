@@ -2,6 +2,12 @@
 # startup rather than per request, now that the UI is built per request
 about_html <- HTML(mark(here("app/about.md"), output = NA))
 
+# Data Sources & Attribution panel -- built once at startup from
+# app/data/attributions.csv (functions.R::attribution_table_html()), same
+# reasoning as about_html above: the citation data changes with a release,
+# not per request.
+datasources_html <- attribution_table_html()
+
 # ui is a FUNCTION of the request, not a static object, for one reason: the
 # client IP. shiny-server does not proxy the websocket upgrade — it opens a
 # fresh localhost connection to the R worker — so the server session sees
@@ -286,7 +292,7 @@ ui <- function(req) page_navbar(
     .cc-filters-modal .text-muted { color: var(--cc-muted) !important; }
     /* section headings: blue icon + label, matching the mockup */
     .cc-filters-modal > div > .bi,
-    .cc-filters-modal .cc-ds-tree .bi { color: var(--bs-primary); }
+    .cc-filters-modal .cc-ds-list .bi { color: var(--bs-primary); }
     .cc-filters-modal a { color: var(--bs-primary); font-weight: 550; }
     /* date range inputs */
     .cc-filters-modal .input-daterange .form-control,
@@ -303,25 +309,54 @@ ui <- function(req) page_navbar(
       color: var(--cc-muted) !important;
     }
 
-    /* --- Filters panel > Datasets tree --------------------------------- */
-    .cc-ds-cat { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 0.3rem 0; }
-    .cc-ds-cat:last-child { border-bottom: none; }
-    .cc-ds-cat-head { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
-    .cc-ds-cat-arrow { display: inline-block; width: 0.9rem; transition: transform 0.15s; opacity: 0.7; }
-    .cc-ds-cat-collapsed .cc-ds-cat-arrow { transform: rotate(-90deg); }
-    .cc-ds-cat-collapsed .cc-ds-cat-body { display: none; }
-    .cc-ds-cat-body { padding-left: 2.05rem; margin-top: 0.2rem; }
-    .cc-ds-cat-count { margin-left: auto; color: #57c78a !important; }
-    /* rounded icon tile per category (Fish / Crustaceans / ...) */
-    .cc-ds-cat-tile {
-      width: 22px; height: 22px;
-      border-radius: 7px;
-      background: rgba(90, 176, 255, 0.12);
-      color: #5ab0ff;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
+    /* --- Filters panel > Datasets list -----------------------------------
+       Flat-list redesign (2026-09-07, third and final pass after Betty
+       reviewed 5 mockups side by side): one always-visible row per dataset,
+       sorted by category, with a small category tag on the right of each
+       row -- 'searchable flat list' minus the search box, since 10 datasets
+       doesn't need searching. functions.R::dataset_list_picker_ui() builds
+       the real checkboxGroupInput (#sel_bio_ds) with choiceNames carrying the
+       name+tag markup per row directly (no client-side grouping/re-parenting
+       JS needed, unlike the two earlier designs this replaced) -- this only
+       styles the result. */
+    .cc-ds-list .shiny-options-group {
+      display: flex; flex-direction: column; gap: 0; margin: 0;
+      border: 1px solid var(--cc-border); border-radius: 10px; overflow: hidden;
+    }
+    .cc-ds-list .checkbox,
+    .cc-ds-list .form-check { margin: 0; }
+    .cc-ds-list .checkbox label,
+    .cc-ds-list .form-check-label {
+      display: flex !important; align-items: center; gap: 0.55rem;
+      padding: 0.5rem 0.75rem; margin: 0; width: 100%;
+      font-size: 0.83rem; font-weight: 500; cursor: pointer;
+      border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+      transition: background 0.1s, color 0.1s;
+    }
+    .cc-ds-list .checkbox:last-child label,
+    .cc-ds-list .form-check:last-child .form-check-label { border-bottom: none; }
+    .cc-ds-list .checkbox label:hover,
+    .cc-ds-list .form-check-label:hover { background: var(--cc-tool); }
+    .cc-ds-list input[type=checkbox] {
+      width: 15px; height: 15px; margin: 0; flex: 0 0 auto; accent-color: var(--bs-primary);
+    }
+    .cc-ds-list .checkbox label:has(input:focus-visible),
+    .cc-ds-list .form-check-label:has(input:focus-visible) {
+      outline: 2px solid var(--bs-primary); outline-offset: -2px;
+    }
+    .cc-ds-row-name { flex: 1 1 auto; }
+    .cc-ds-row-tag {
+      flex: 0 0 auto; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.03em;
+      color: var(--cc-muted); background: var(--cc-tool); border-radius: 999px;
+      padding: 0.18rem 0.55rem;
+    }
+    /* an unchecked row dims -- both the row itself and its tag -- so
+       exclusions are legible without inspecting individual checkboxes */
+    .cc-ds-list .checkbox label:not(:has(input:checked)),
+    .cc-ds-list .form-check-label:not(:has(input:checked)) { color: var(--cc-muted); }
+    .cc-ds-list .checkbox label:not(:has(input:checked)) .cc-ds-row-tag,
+    .cc-ds-list .form-check-label:not(:has(input:checked)) .cc-ds-row-tag {
+      background: transparent; border: 1px dashed var(--cc-border-strong);
     }
 
     /* --- Filters panel: quarter pills + depth slider accent ----------- */
@@ -577,6 +612,23 @@ ui <- function(req) page_navbar(
     .cc-panel.is-collapsed .cc-panel-scroll { display: none; }
     .cc-panel.is-collapsed .cc-panel-bar { justify-content: center; padding: 0.55rem 0; }
     .cc-panel.is-collapsed .cc-panel-toggle svg { transform: rotate(180deg); }
+    /* collapsed icon rail (functions.R map_panel_ui() .cc-panel-rail-btn, one
+       per section): hidden while the panel is open, shown in its place once
+       collapsed -- see the long comment on .cc-panel-rail in functions.R. */
+    .cc-panel-rail {
+      display: none; flex: 1 1 auto; min-height: 0; overflow-y: auto;
+      flex-direction: column; align-items: center; gap: 0.3rem;
+      padding: 0.5rem 0; scrollbar-width: none;
+    }
+    .cc-panel-rail::-webkit-scrollbar { width: 0; height: 0; }
+    .cc-panel.is-collapsed .cc-panel-rail { display: flex; }
+    .cc-panel-rail-btn {
+      width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center;
+      border: 0; background: transparent; color: var(--cc-muted);
+      border-radius: 7px; cursor: pointer;
+    }
+    .cc-panel-rail-btn:hover { background: var(--cc-tool); color: var(--bs-body-color); }
+    .cc-panel-rail-btn .bi { width: 15px; height: 15px; }
     .cc-panel-scroll {
       flex: 1 1 auto; min-height: 0; overflow-y: auto;
       padding: 0.6rem 0.75rem 0.8rem;
@@ -619,6 +671,10 @@ ui <- function(req) page_navbar(
       font-size: 0.82rem; font-weight: 600; letter-spacing: 0.03em;
       text-transform: uppercase; color: var(--cc-muted); margin-bottom: 0.32rem;
     }
+    /* 'Standardized as' (cpue_unit_selector_ui) sits right above a stack of
+       radio options that can wrap to two lines each -- the generic label
+       spacing above reads as too tight against that much text */
+    #sel_cpue_unit > label.control-label { margin-bottom: 1rem !important; }
     .cc-panel .selectize-input,
     .cc-panel .selectize-input .item,
     .cc-panel .selectize-dropdown,
@@ -748,25 +804,12 @@ ui <- function(req) page_navbar(
     #shiny-modal:has(.cc-transect-modal) #transect_map > div { height: 100% !important; }
 
     /* Download section in the left panel (functions.R::map_panel_ui).
-       Leads with the integrated dataset (the hero block); chart tables + raw
-       source files are behind native <details>. */
+       Chart tables + raw source files + citations are each behind their own
+       native <details>. */
     .cc-dl-body { display: flex; flex-direction: column; gap: 0.5rem; }
     .cc-dl-body .checkbox, .cc-dl-body .form-check { margin-bottom: 0.15rem; }
-    .cc-dl-hero {
-      border: 1px solid color-mix(in srgb, var(--bs-primary) 45%, transparent);
-      background: var(--cc-accent-soft);
-      border-radius: 9px; padding: 0.5rem 0.6rem;
-    }
-    .cc-dl-hero-h {
-      display: flex; align-items: center; gap: 0.35rem;
-      font-weight: 650; font-size: 0.9rem;
-      color: color-mix(in srgb, var(--bs-primary) 82%, var(--bs-body-color));
-    }
-    .cc-dl-hero-h .bi { width: 0.82rem; height: 0.82rem; }
-    .cc-dl-hero-d {
-      font-size: 0.8rem; color: var(--cc-muted); line-height: 1.4; margin-top: 0.15rem;
-    }
     .cc-dl-more { border-top: 1px solid var(--cc-border); padding-top: 0.35rem; }
+    .cc-dl-body > .cc-dl-more:first-child { border-top: none; padding-top: 0; }
     .cc-dl-more > summary {
       list-style: none; cursor: pointer;
       display: flex; align-items: center; gap: 0.4rem;
@@ -839,6 +882,28 @@ ui <- function(req) page_navbar(
       .cc-panel { flex-basis: auto; width: auto; max-height: 40vh; }
     }
 
+    /* --- Spatial Filter ('Layers') modal: same centred/fit-viewport
+       treatment as the Map Layers and Create Depth Profile modals above --
+       this one had never been given a hook into that shared pattern (no
+       `class=` at all on its modalDialog()), so it fell back to Shiny's
+       plain top-anchored default with no max-height on .modal-body: at
+       'xl' width, the zones map + table + footer together run taller than
+       most viewports, so the whole BROWSER PAGE had to be scrolled to see
+       the bottom of the dialog instead of just the dialog's own content
+       scrolling in place (bug report 2026-09-07: 'can layers be centered on
+       page. rn need to scroll to see' -- for both the CalCOFI Zones and
+       Ichthyoplankton-category views of this same modal). Giving it the
+       `cc-spatial-modal` class (functions.R::modal_spatial_filter()) hooks
+       it into the identical fix already proven on .cc-lyr-block. */
+    #shiny-modal:has(.cc-spatial-modal) .modal-dialog {
+      max-width: 1060px; width: calc(100vw - 3rem); margin: 1.75rem auto;
+      min-height: calc(100% - 3.5rem);
+      display: flex; align-items: center;
+    }
+    #shiny-modal:has(.cc-spatial-modal) .modal-body {
+      max-height: calc(100vh - 11rem); overflow-y: auto;
+    }
+
     /* --- top bar -- reproduces Main.dc.html to the pixel (colors via the
        --cc-* theme tokens instead of the mockup's fixed dark hex):
          cards row : flex, gap 16px, padding 20px 32px 0
@@ -889,18 +954,24 @@ ui <- function(req) page_navbar(
     }
     /* OFF-state control: a filled blue button next to the label, swapped for
        the switch on #cmp_env_toggle:checked so the card height is stable. */
+    /* louder pill (mockup option A, approved 2026-09-07): same slot/layout,
+       just a size and weight bump plus a soft colored shadow ring so the
+       one card in the top row that's waiting for input doesn't read as flat
+       label text next to Species/Taxa */
     .cc-env-add {
-      display: inline-flex; align-items: center; gap: 0.34rem; flex: 0 0 auto;
-      font-size: 0.8rem; font-weight: 600; line-height: 1.1; white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 0.4rem; flex: 0 0 auto;
+      font-size: 0.84rem; font-weight: 700; line-height: 1.1; white-space: nowrap;
       color: #fff; text-decoration: none;
       background: var(--bs-primary); border: 0;
-      border-radius: 7px; padding: 0.32rem 0.7rem;
+      border-radius: 8px; padding: 0.4rem 0.85rem;
+      box-shadow: 0 3px 8px rgba(var(--bs-primary-rgb), 0.55),
+                  0 0 0 3px rgba(var(--bs-primary-rgb), 0.14);
     }
     .cc-env-add:hover, .cc-env-add:focus {
       color: #fff; text-decoration: none;
       background: color-mix(in srgb, var(--bs-primary) 88%, #000);
     }
-    .cc-env-add .bi { width: 0.72rem; height: 0.72rem; }
+    .cc-env-add .bi { width: 0.78rem; height: 0.78rem; }
     /* ON state: the switch is pushed to the card's far right (margin-left:auto)
        and reads as a quiet grey toggle, not the bright accent one. */
     .cc-env-switch {
@@ -974,12 +1045,18 @@ ui <- function(req) page_navbar(
     /* per-pane titles (server.R #map_title_sp/env): a compact pill floated
        INSIDE the map, top-left, like the mockup -- not a strip above it (that
        ate a row of vertical space). Click-through so map drag works under it.
-       The species title shows on every Map view; the environmental one only in
-       the side-by-side split, positioned over the right pane. */
+       Both pills live here, in .cc-map-titles, permanently -- CSS alone
+       decides which one shows and where (see the rules right below, and
+       updateSwipeTitle() in the JS further down). An earlier design instead
+       physically moved each pill into the map widget's own pane container so
+       it would clip itself for free; that broke every time Compare or
+       Split/Swipe was toggled, because toggling rebuilds the widget's DOM and
+       destroys whatever had been moved into it (three rounds of that, 2026-09-07,
+       before landing on this CSS-only approach). */
     .cc-map-titles { position: absolute; inset: 0 0 auto 0; z-index: 6; pointer-events: none; }
     .cc-map-title {
-      position: absolute; top: 0.55rem;
-      max-width: calc(50% - 3.5rem);
+      position: absolute; top: 0.55rem; left: 0.5rem;
+      max-width: calc(100% - 4rem);
       padding: 0.3rem 0.7rem;
       font-size: 0.84rem; font-weight: 600; letter-spacing: 0.005em;
       color: var(--bs-body-color);
@@ -989,9 +1066,53 @@ ui <- function(req) page_navbar(
       border-radius: 999px;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       box-shadow: var(--cc-shadow);
+      pointer-events: none;
     }
-    .cc-map-title-sp  { left: 0.5rem; }
-    .cc-map-title-env { left: calc(50% + var(--cc-gutter) / 2 + 0.5rem); }
+    /* Compare off: species pill only (the only map showing). max-width above
+       is sized for this single-pill case (nearly the full pane width). */
+    .cc-map-title-env { display: none; }
+    /* Split: two side-by-side maps -- show both, slide the env pill over to
+       its own pane's top-left corner instead of stacking on the species one,
+       and narrow both so neither can grow into the gutter between panes.
+       Split is the ONLY layout with no .maplibregl-compare slider anywhere in
+       the DOM at all (Off and Swipe both run the widget's 'swipe' mode under
+       the hood -- Off just hides the slider with CSS -- so ':not(:has(slider))'
+       alone singles out Split without needing to also check the map wrap).
+       IMPORTANT: this chains :has()/:not(:has()) directly on body as two
+       separate pseudo-classes -- it does NOT nest one :has() inside another's
+       argument (that combination is invalid per spec and the whole rule is
+       silently dropped, which is what shipped broken here on the first pass,
+       2026-09-07: `.cc-map-wrap:has(> #map:not(:has(.maplibregl-compare)))`
+       has a :has() living inside :not() living inside :has() -- invalid, so
+       the env pill in Split mode never showed at all). */
+    body:has(input#cmp_env_toggle:checked):not(:has(.maplibregl-compare))
+      .cc-map-title {
+      max-width: calc(50% - 3rem);
+    }
+    body:has(input#cmp_env_toggle:checked):not(:has(.maplibregl-compare))
+      .cc-map-title-env {
+      display: block;
+      left: calc(50% + (var(--cc-gutter) / 2) + 0.5rem);
+    }
+    /* Swipe: both maps overlay the exact same rectangle, so only ONE title
+       ever makes sense -- whichever pane the slider currently reveals at the
+       pinned top-left corner. Both pills stay anchored at the same spot
+       (left: 0.5rem, the default above); .cc-swipe-show-env is toggled by
+       updateSwipeTitle() in the JS below as the slider moves.
+       No ':has(.maplibregl-compare)' rule needed here to switch the env pill
+       on for swipe mode -- .cc-map-title-env's own base rule above (display:
+       none) is already the right default for swipe too (slider not dragged
+       to the far left -> species shows, same as Compare off), so the class
+       below only ever needs to say when to swap TO env, never to force it on
+       unconditionally. An earlier version had exactly that unconditional
+       'swipe mode -> display:block' rule, and it fought the class below: the
+       env pill was permanently visible (and, being later in the DOM at the
+       same position, visually on top of the species pill) no matter where
+       the slider actually was (bug report 2026-09-08: 'it should only say
+       env when swipe all the way left' -- it said env everywhere,
+       including with the slider centered). */
+    .cc-map-wrap.cc-swipe-show-env .cc-map-title-sp  { display: none; }
+    .cc-map-wrap.cc-swipe-show-env .cc-map-title-env { display: block; }
     /* nudge maplibre's own top-left controls (the scale bar) below the pill so
        the km scale and the title pill do not overlap */
     #map .maplibregl-ctrl-top-left { margin-top: 2.7rem; }
@@ -1030,7 +1151,6 @@ ui <- function(req) page_navbar(
          * Compare ON + Split -> mapgl sync (grid of two .maplibregl-map);
            reshape the grid to a real gutter, per the Compare mockup.
        maplibre-gl's ResizeObserver repaints each canvas to its new size. */
-
     /* Compare OFF: single full map. Target the maps by ID (they are #map-before
        / #map-after in BOTH the swipe and sync DOM) -- a :last-of-type selector
        was silently matching nothing here (all three children are <div>, and the
@@ -1327,6 +1447,218 @@ ui <- function(req) page_navbar(
       text-decoration: none;
     }
     .cc-util-close .bi { width: 0.8rem; height: 0.8rem; }
+
+    /* Data Sources & Attribution page (functions.R::attribution_table_html())
+       -- a <details> per dataset so the full citation/license/acknowledgement
+       text is available without a separate modal. Colors ride the app's
+       existing theme tokens so this is dark-mode-correct for free. Flex, not
+       grid, for the summary row -- a grid with a mismatched track count is
+       exactly what left a stray blank row under the old +/- indicator. */
+    .cc-attrib-page { max-width: 920px; margin: 0 auto; }
+    .cc-attrib-intro h4 { font-size: 1.15rem; font-weight: 700; margin-bottom: 0.4rem; }
+    .cc-attrib-intro p { max-width: 720px; line-height: 1.55; }
+    .cc-attrib-table {
+      margin-top: 1.1rem; background: var(--cc-surface);
+      border: 1px solid var(--cc-border); border-radius: 10px;
+      padding: 0.2rem 1rem; box-shadow: var(--cc-shadow);
+    }
+    .cc-attrib-thead { display: flex; padding: 0.6rem 0; gap: 14px; }
+    .cc-attrib-thead .cc-attrib-lbl:first-child { flex: 0 0 220px; }
+    .cc-attrib-lbl {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+      color: var(--cc-muted); letter-spacing: 0.03em;
+    }
+    .cc-attrib-row { border-top: 1px solid var(--cc-border); }
+    .cc-attrib-row:first-of-type { border-top: none; }
+    .cc-attrib-row > summary {
+      display: flex; align-items: center; gap: 14px;
+      padding: 0.65rem 0; cursor: pointer; list-style: none;
+    }
+    .cc-attrib-row > summary::-webkit-details-marker { display: none; }
+    .cc-attrib-main { flex: 0 0 220px; min-width: 0; }
+    .cc-attrib-name { font-weight: 600; }
+    .cc-attrib-comp-count { font-weight: 400; color: var(--cc-muted); font-size: 0.78rem; margin-left: 0.35rem; }
+    .cc-attrib-provider { flex: 1 1 auto; min-width: 0; color: var(--cc-muted); font-size: 0.85rem; }
+    .cc-attrib-inst { display: block; font-size: 0.8rem; }
+    .cc-attrib-chev {
+      flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--cc-muted); transition: transform 0.18s ease, background 0.15s ease, color 0.15s ease;
+    }
+    .cc-attrib-chev .bi { width: 0.75rem; height: 0.75rem; }
+    .cc-attrib-row:hover .cc-attrib-chev { background: var(--cc-tool); color: var(--bs-body-color); }
+    .cc-attrib-row[open] > summary .cc-attrib-chev { transform: rotate(90deg); }
+    .cc-attrib-detail { padding: 0 0 0.9rem; font-size: 0.85rem; line-height: 1.5; }
+    .cc-attrib-component {
+      padding: 0.6rem 0.75rem; margin: 0.3rem 0; border-radius: 7px;
+      background: var(--cc-tool);
+    }
+    .cc-attrib-comp-name {
+      font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.03em; color: var(--cc-muted); margin-bottom: 0.4rem;
+    }
+    .cc-attrib-cite { background: var(--cc-surface); border-radius: 7px; padding: 0.5rem 0.7rem; margin-bottom: 0.4rem; }
+    .cc-attrib-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.7rem; margin: 0 0 0.4rem; }
+    .cc-attrib-meta dt {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.03em; color: var(--cc-muted); padding-top: 0.1rem;
+    }
+    .cc-attrib-meta dd { margin: 0; }
+    .cc-attrib-note { color: var(--cc-muted); font-size: 0.8rem; font-style: italic; margin: 0 0 0.4rem; }
+    /* right-aligned action row under a component's citation: Source, then Copy */
+    .cc-attrib-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.9rem; }
+    .cc-attrib-actions .cc-cite-source-link { font-size: 0.76rem; }
+    .cc-attrib-copy {
+      font-size: 0.76rem; font-weight: 600; padding: 0.22rem 0.55rem; border-radius: 6px;
+      border: 1px solid var(--cc-border); background: var(--cc-surface); color: var(--bs-body-color); cursor: pointer;
+    }
+    .cc-attrib-copy:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
+
+    /* collapsed legal/disclaimer text shared by cc-attrib-detail, cc-cite-list
+       and cc-dl-cite-panel -- keeps a long boilerplate paragraph (e.g. the
+       NOAA ERDDAP standard disclaimer) out of the main flow by default. */
+    .cc-license-block { margin-top: 0.4rem; }
+    .cc-license-block > summary {
+      font-size: 0.74rem; font-weight: 600; color: var(--cc-muted); cursor: pointer;
+      list-style: none;
+    }
+    .cc-license-block > summary::-webkit-details-marker { display: none; }
+    .cc-license-block > summary::before { content: '▸ '; }
+    .cc-license-block[open] > summary::before { content: '▾ '; }
+    .cc-license-block-text {
+      margin: 0.3rem 0 0; font-size: 0.78rem; line-height: 1.5; color: var(--cc-muted);
+    }
+
+    /* left-panel 'Sources & Citations' box (map_panel_ui() #cc-sec-sources,
+       server.R::data_sources_box_ui()) -- provider info AND each source's
+       citation together (mockup option C), so this is the one place for
+       'who provided this and how do I cite it' instead of splitting the
+       citation into a separate 'Dataset citations & license' toggle under
+       Download, which used to repeat the same datasets. Each source is its
+       own tinted card -- the same visual language as .cc-attrib-component on
+       the full Data Sources page -- plus a jump link to that full tab. */
+    .cc-sources-box { font-size: 0.85rem; }
+    /* only rendered when both Species and Environment actually contribute a
+       source (server.R data_sources_box_ui()) -- Compare-off stays a plain
+       undivided list, same as before */
+    .cc-sources-group-label {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--cc-muted);
+      margin: 0.9rem 0 0.4rem;
+    }
+    .cc-sources-group-label:first-child { margin-top: 0; }
+    .cc-sources-item {
+      background: var(--cc-tool); border-radius: 8px; padding: 0.6rem 0.75rem; margin-bottom: 0.5rem;
+    }
+    .cc-sources-item:last-of-type { margin-bottom: 0.8rem; }
+    .cc-sources-ds { font-weight: 650; font-size: 0.86rem; }
+    .cc-sources-provider { color: var(--cc-muted); font-size: 0.78rem; margin-top: 0.1rem; }
+    /* the citation block (functions.R::dataset_citation_items(), reused from
+       the old Download panel) sits right below the provider line -- a divider
+       marks it as a distinct sub-section, and the citation text itself needs
+       a lighter fill than this card's own background or it disappears into
+       it exactly like the 'Cite this data' modal pills used to */
+    .cc-sources-item .cc-dl-cite-item:first-of-type {
+      margin-top: 0.55rem; padding-top: 0.55rem; border-top: 1px solid var(--cc-border);
+    }
+    .cc-sources-item .cc-dl-cite-text { background: var(--cc-surface); }
+    .cc-sources-link {
+      display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.82rem; font-weight: 600;
+    }
+
+    /* map title info popover (ui.R #cc-map-title-sp) -- the pill's parent has
+       pointer-events:none so map drag passes through; this one icon opts back
+       in so the popover trigger is clickable. */
+    .cc-map-title-info {
+      display: inline-flex; margin-left: 0.35rem; pointer-events: auto;
+      color: var(--cc-muted); vertical-align: -2px; cursor: pointer;
+    }
+    .cc-map-title-info .bi { width: 0.78rem; height: 0.78rem; }
+    .cc-map-title-info:hover { color: var(--bs-body-color); }
+
+    /* 'Cite this data' modal (functions.R::attrib_citation_html()) -- a plain
+       reading list: name + Copy on one line, a monospace citation, and
+       license/acknowledgement folded into one fine-print line. Entries are
+       separated by an ordinary divider, not a colored rule or a tinted box. */
+    .cc-dl-actions { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem; }
+    /* bslib's default btn-outline-secondary reads as near-invisible in dark
+       mode (dim border + dim text on a dark ground) -- use the same
+       theme-aware tokens as the rest of the attribution UI instead. */
+    .cc-dl-actions .btn-outline-secondary {
+      border-color: var(--cc-border); color: var(--bs-body-color); background: var(--cc-surface);
+    }
+    .cc-dl-actions .btn-outline-secondary:hover,
+    .cc-dl-actions .btn-outline-secondary:focus {
+      border-color: var(--bs-primary); color: var(--bs-primary); background: var(--cc-tool);
+    }
+    .cc-cite-list { display: flex; flex-direction: column; }
+    .cc-cite-entry { padding: 0.9rem 0; }
+    .cc-cite-entry:first-child { padding-top: 0; }
+    .cc-cite-entry:last-child { padding-bottom: 0; }
+    .cc-cite-entry + .cc-cite-entry { border-top: 1px solid var(--cc-border); }
+    .cc-cite-entry-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.8rem; margin-bottom: 0.4rem; }
+    .cc-cite-entry-name { font-weight: 700; font-size: 0.92rem; }
+    .cc-cite-copylink {
+      flex: 0 0 auto; white-space: nowrap; font-size: 0.78rem; font-weight: 600;
+      color: var(--bs-primary); background: none; border: none; padding: 0; cursor: pointer;
+    }
+    .cc-cite-copylink:hover { text-decoration: underline; }
+    /* Source + Copy shown together as a peer action row (not inline in the
+       citation text, which wraps in the narrower panels) -- see
+       citation_source_link() in functions.R */
+    .cc-cite-actions { display: flex; align-items: baseline; gap: 0.8rem; }
+    .cc-cite-source-link {
+      font-size: 0.78rem; font-weight: 600; color: var(--bs-primary);
+      white-space: nowrap;
+    }
+    .cc-cite-source-link:hover { text-decoration: underline; }
+    .cc-cite-mono {
+      font-family: var(--bs-font-monospace, ui-monospace, SFMono-Regular, Consolas, monospace);
+      font-size: 0.8rem; color: var(--bs-body-color);
+      /* a plain --cc-tool fill barely differs from the modal's own
+         background; mix in more body-color so the citation box actually
+         reads as a distinct block instead of blending in */
+      background: color-mix(in srgb, var(--cc-tool) 85%, var(--bs-body-color) 15%);
+      border-radius: 6px; padding: 0.5rem 0.65rem; line-height: 1.55; margin-bottom: 0.35rem;
+    }
+    .cc-cite-fine { font-size: 0.8rem; color: var(--cc-muted); line-height: 1.5; }
+    .cc-cite-more { margin-top: 0.8rem; font-size: 0.78rem; }
+
+    /* a dataset with several components (e.g. 7 SWFSC ERDDAP files) groups
+       under one heading instead of repeating the dataset name on every line */
+    .cc-cite-group-name { display: flex; align-items: baseline; margin-bottom: 0.6rem; }
+    .cc-cite-group .cc-attrib-component { margin: 0 0 0.6rem; }
+    .cc-cite-group .cc-attrib-component:last-child { margin-bottom: 0; }
+    .cc-cite-group .cc-attrib-component .cc-cite-mono { background: var(--cc-surface); }
+
+    /* per-source citation block (functions.R::dataset_citation_items()) --
+       citation text, then a license pill and an inline Copy link on one row.
+       Used inside the left-panel Sources & Citations box (.cc-sources-item
+       above) and, previously, a now-removed Download panel toggle. */
+    .cc-dl-cite-item + .cc-dl-cite-item { margin-top: 0.5rem; }
+    /* several components under one dataset get a connecting left rail so
+       they read as one group instead of a flat run of unrelated items */
+    .cc-dl-cite-item-multi {
+      padding-left: 0.6rem; border-left: 2px solid var(--cc-border);
+    }
+    .cc-dl-cite-comp {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.03em; color: var(--cc-muted); margin-bottom: 0.25rem;
+    }
+    .cc-dl-cite-text {
+      background: var(--cc-tool); border-radius: 7px; padding: 0.5rem 0.65rem; font-size: 0.82rem; margin-bottom: 0.4rem;
+      /* long DOI/URL citations otherwise overflow the narrow left panel */
+      overflow-wrap: anywhere; word-break: break-word;
+    }
+    .cc-dl-cite-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+    .cc-dl-cite-pill {
+      font-size: 0.72rem; color: var(--cc-muted); background: var(--cc-surface);
+      border: 1px solid var(--cc-border); border-radius: 999px; padding: 0.15rem 0.55rem;
+    }
+    .cc-dl-cite-actions { display: flex; align-items: center; gap: 0.7rem; }
+    .cc-dl-cite-row .cc-cite-copylink { font-size: 0.76rem; }
+    .cc-dl-cite-row .cc-cite-source-link { font-size: 0.76rem; }
+
     /* extra vertical breathing room: more gap when the chip pills wrap, and a
        real margin below the row so the map + left panel sit lower / less
        cluttered against the top bar */
@@ -1459,10 +1791,23 @@ ui <- function(req) page_navbar(
     .cc-combo2-open .cc-combo2-panel { display: flex; }
 
     .cc-combo2-search { padding: 0.6rem; border-bottom: 1px solid var(--cc-border); flex: 0 0 auto; }
+    /* search field used to sit at --bs-body-bg (the page ground) inside a
+       --cc-tool panel -- in light mode those are #eef2f7 vs #e4ebf2, four
+       shades apart, so the field read as part of the panel rather than a
+       control on it. --cc-surface (white in light mode) + the stronger
+       border + a barely-there shadow give it a surface of its own; the
+       search icon (always visible, not just a placeholder word) is the
+       other half of 'this is a search box' (user report 2026-09-07: 'search
+       bar in dropdown ... kinda blends into background'). */
+    .cc-combo2-search-wrap { position: relative; }
+    .cc-combo2-search-icon {
+      position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%);
+      width: 0.9rem; height: 0.9rem; color: var(--cc-muted); pointer-events: none;
+    }
     .cc-combo2-search-input, .cc-combo2-drill-search-input {
-      width: 100%; border: 1px solid var(--cc-border); border-radius: 6px;
-      padding: 0.45rem 0.65rem; background: var(--bs-body-bg); color: inherit;
-      font-size: 0.875rem;
+      width: 100%; border: 1px solid var(--cc-border-strong); border-radius: 6px;
+      padding: 0.45rem 0.65rem 0.45rem 2rem; background: var(--cc-surface); color: inherit;
+      font-size: 0.875rem; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
     }
     .cc-combo2-search-input:focus, .cc-combo2-drill-search-input:focus {
       outline: none; border-color: var(--bs-primary);
@@ -1478,7 +1823,12 @@ ui <- function(req) page_navbar(
     .cc-combo2-flat .cc-combo2-group-arrow { display: none; }
     .cc-combo2-flat .cc-combo2-group + .cc-combo2-group { border-top: 1px solid var(--cc-border); }
     .cc-combo2-group-arrow { opacity: 0.6; width: 0.9rem; text-align: center; flex: 0 0 auto; }
-    .cc-combo2-group-name { font-weight: 600; flex: 1 1 auto; font-size: 0.9rem; }
+    .cc-combo2-group-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; gap: 0.05rem; }
+    .cc-combo2-group-name { font-weight: 600; font-size: 0.9rem; }
+    .cc-combo2-group-prov {
+      font-size: 0.72rem; font-weight: 400; color: var(--cc-muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .cc-combo2-group-count {
       font-size: 0.72rem; color: var(--cc-muted);
       background: rgba(127, 127, 127, 0.16); padding: 0.1rem 0.5rem; border-radius: 1rem; flex: 0 0 auto;
@@ -1495,11 +1845,13 @@ ui <- function(req) page_navbar(
     .cc-combo2-item-check {
       position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--bs-primary);
     }
-    .cc-combo2-item-name { font-weight: 500; }
+    .cc-combo2-item-name { font-weight: 600; }
     .cc-combo2-item-name i, .cc-combo2-sci { font-style: italic; }
-    .cc-combo2-sci { color: var(--cc-muted); }
+    /* scientific name reads as secondary info: lighter weight, a touch
+       smaller, and muted -- so it doesn't compete with the common name */
+    .cc-combo2-sci { color: var(--cc-muted); font-weight: 400; font-size: 0.92em; }
     .cc-combo2-label-name i { font-style: italic; }
-    .cc-combo2-label-name .cc-combo2-sci { color: var(--cc-muted); }
+    .cc-combo2-label-name .cc-combo2-sci { color: var(--cc-muted); font-weight: 400; }
     .cc-combo2-item-ds { color: var(--cc-muted); font-size: 0.85em; }
 
     .cc-combo2-showall { padding: 0.4rem 0.85rem 0.5rem 2.1rem; color: var(--bs-primary); cursor: pointer; font-size: 0.85rem; }
@@ -1641,6 +1993,64 @@ ui <- function(req) page_navbar(
         if (after)  after.getCanvas().style.cursor = '';
       }
 
+      // Three failed rounds (2026-09-07) tried moving the actual title pill
+      // elements into the map's own pane containers so they'd clip/position
+      // themselves automatically. All three eventually failed the same way:
+      // toggling Compare, or switching Split/Swipe, tears down and rebuilds
+      // the widget's internal DOM -- once a pill had been physically moved
+      // INTO that DOM, rebuilding it destroys the pill along with it (it's
+      // not misplaced, it's gone -- there's nothing left to re-find on the
+      // next poll). That's why single-map mode looked fixed right after a
+      // restart but broke again the moment Compare was toggled on/off.
+      //
+      // New approach: never move the real elements. They stay exactly where
+      // R put them, in .cc-map-titles, for good -- that div is static markup
+      // Shiny never re-renders, so it can't be torn down by a widget rebuild.
+      // Which one is visible, and where, is decided entirely by CSS (see the
+      // .cc-map-title-env / .cc-swipe-show-env rules above), driven by two
+      // things JS keeps in sync: whether Compare is on (already reflected by
+      // input#cmp_env_toggle, no JS needed) and, in swipe mode only, which
+      // pane the slider currently reveals at the pinned top-left corner --
+      // that's what updateSwipeTitle() below tracks.
+      function updateSwipeTitle() {
+        var wrap = document.querySelector('.cc-map-wrap');
+        if (!wrap) return;
+        var toggle = document.getElementById('cmp_env_toggle');
+        var slider = document.querySelector('#map .maplibregl-compare');
+        var mapEl  = document.getElementById('map');
+        // Bail to the CSS default (species pill only) unless Compare is
+        // actually ON *and* the slider is genuinely rendered.
+        //
+        // Compare OFF still has a slider element sitting in the DOM -- the
+        // widget mode underneath is 'swipe' even then, just CSS-collapsed to
+        // one plain map -- so `slider` was never null and this function fell
+        // through to measuring it anyway. A display:none element's
+        // getBoundingClientRect() is all zeros, so sliderRect.left came back
+        // 0 while mapRect.left was the map's real (positive) screen offset;
+        // that made `pct` a large NEGATIVE number, which is always < 0.03,
+        // which added .cc-swipe-show-env and stuck the environment pill on
+        // PERMANENTLY with Compare off (bug report 2026-09-08: 'the default
+        // map says environment it is taxa'). getClientRects().length is the
+        // standard way to ask 'is this actually rendered right now' -- it's
+        // empty for display:none (and for any display:none ancestor), unlike
+        // a bounding rect which always returns numbers.
+        if (!toggle || !toggle.checked || !slider || !mapEl ||
+            slider.getClientRects().length === 0) {
+          wrap.classList.remove('cc-swipe-show-env');
+          return;
+        }
+        var mapRect    = mapEl.getBoundingClientRect();
+        var sliderRect = slider.getBoundingClientRect();
+        if (mapRect.width <= 0) return;
+        // fraction of the map's width the slider currently sits at, from the
+        // left -- 0 means dragged all the way over, so the 'after' (env) map
+        // now fills the view including the pinned top-left corner where the
+        // title lives (bug report 2026-09-07: 'when you swipe all the way it
+        // reads species ... for the environment which is misleading')
+        var pct = (sliderRect.left - mapRect.left) / mapRect.width;
+        wrap.classList.toggle('cc-swipe-show-env', pct < 0.03);
+      }
+
       function wire(inst) {
         var before = inst.getBeforeMap && inst.getBeforeMap();
         var after  = inst.getAfterMap  && inst.getAfterMap();
@@ -1648,9 +2058,40 @@ ui <- function(req) page_navbar(
         if (before.__ccXhWired && after.__ccXhWired) return;
         before.__ccXhWired = true; after.__ccXhWired = true;
         LOG('wired a fresh map pair');
+
+        // Tell the server once this FRESH pair of maplibre GL JS map objects
+        // has actually finished loading (WebGL context + initial style) --
+        // not just once R has flushed the render. draw_legends()'s proxy
+        // calls (maplibre_compare_proxy(...) |> add_legend(...)) target the
+        // live widget instance; sending one before the underlying map has
+        // loaded is a silent no-op, which is what made the environmental
+        // (and sometimes species) legend intermittently miss a full widget
+        // rebuild -- session$onFlushed only guarantees the R-side message
+        // reached the client, not that the browser's own async map init has
+        // finished, so it raced the same load the moveend handler happened
+        // to wait out for free (bug report 2026-09-07: 'why does the legend
+        // flicker...you need to click into the map and move the view to
+        // have it appear sometimes'). This fires exactly once per fresh
+        // map pair -- the __ccXhWired guard above already ensures wire()
+        // only reaches here once per widget rebuild, so there's no need to
+        // separately track rebuilds server-side any more.
+        (function () {
+          var pending = 2;
+          function ready() {
+            if (--pending > 0) return;
+            if (window.Shiny) Shiny.setInputValue('cc_map_ready', Date.now(), { priority: 'event' });
+          }
+          if (before.loaded()) ready(); else before.once('load', ready);
+          if (after.loaded())  ready(); else after.once('load', ready);
+        })();
+
         var raf = null;
 
         function move(srcMap, otherMap, srcKind, otherKind, e) {
+          // keep the swipe title in sync while actively dragging, not just on
+          // the 800ms poll -- ahead of the raf throttle below since this is
+          // cheap and the title would otherwise visibly lag the slider
+          updateSwipeTitle();
           if (raf) return;
           var tog = document.getElementById('cmp_env_toggle');
           var comparing = tog && tog.checked;
@@ -1702,18 +2143,33 @@ ui <- function(req) page_navbar(
         after.on('mouseout',  function () { hideRead(before, after); });
       }
 
-      // force maplibre's attribution control into its collapsed (i) state
-      // regardless of map width, so it never sprawls a long credit line
+      // force maplibre's attribution control into compact (i-button) MODE
+      // regardless of map width, so it never sprawls a long credit line on
+      // its own -- but never repeatedly touch maplibregl-compact-show here.
+      // That class is maplibre's own open/closed flag for the (i) button's
+      // click handler; this used to strip it on every 800ms tick, which (a)
+      // raced the click handler and closed the credit popup within a second
+      // of the user opening it (bug report 2026-09-07: 'the tag only shows
+      // for like a second then disappears'), and (b), once removed
+      // entirely, left the control's own default (open) state showing
+      // permanently on load since nothing ever collapsed it in the first
+      // place. So: collapse each control's OWN element exactly once, the
+      // first time this sees it (data-cc-attrib-init marks that done), then
+      // never touch -show again -- the click handler owns it from there.
       function collapseAttrib() {
         document.querySelectorAll('#map .maplibregl-ctrl-attrib').forEach(function (a) {
           a.classList.add('maplibregl-compact');
-          a.classList.remove('maplibregl-compact-show');
+          if (!a.dataset.ccAttribInit) {
+            a.dataset.ccAttribInit = '1';
+            a.classList.remove('maplibregl-compact-show');
+          }
         });
       }
 
       setInterval(function () {
         var inst = window.HTMLWidgets && HTMLWidgets.find('#map');
         if (inst) wire(inst);
+        updateSwipeTitle();
         collapseAttrib();
       }, 800);
     })();
@@ -1774,153 +2230,39 @@ ui <- function(req) page_navbar(
     })();
   ")),
 
-  # Group modal_edit_filters()'s Datasets checkboxes (sel_bio_ds) into the
-  # category tree functions.R::dataset_category_tree_ui() lays the data out
-  # for (#cc_ds_tree's data-categories/data-cat-order attributes).
-  #
-  # Client-side on purpose, same reasoning as the layers/compare scripts
-  # above: the modal is inserted fresh each time showModal() fires, so this
-  # watches for #cc_ds_tree via MutationObserver rather than hooking the
-  # button click. It only ever MOVES each checkbox <div> to a deeper spot
-  # inside #sel_bio_ds's own subtree (into a wrapper it inserts), never out of
-  # it -- Shiny's value collection (`$(el).find('input:checked')`) searches
-  # the whole subtree regardless of nesting, so the reactive value this
-  # produces is exactly what a flat, ungrouped checkboxGroupInput would have
-  # produced; only the on-screen arrangement changed.
+  # Live-update the "N of M datasets" summary next to the Datasets list's
+  # header (#ds_tree_total, built by functions.R::dataset_list_picker_ui())
+  # as checkboxes are (un)checked, so it doesn't wait for Apply to reflect
+  # what's currently ticked. The list itself (#sel_bio_ds) needs no other
+  # client-side help -- unlike the two earlier designs this replaced (a
+  # collapsed category tree, then toggle chips), every row's name + category
+  # tag is plain HTML from choiceNames, so there's no grouping/re-parenting
+  # left to do here. Delegated + MutationObserver for the same reason as the
+  # other modal scripts on this page: modal_edit_filters() is rebuilt from
+  # scratch on every showModal(), so a one-time addEventListener at page load
+  # would miss it.
   tags$script(HTML("
     (function () {
-      function buildTree(container) {
-        if (container.dataset.ccTreeBuilt) return;
-        var catsAttr  = container.getAttribute('data-categories');
-        var orderAttr = container.getAttribute('data-cat-order');
-        if (!catsAttr || !orderAttr) return;
-        var cats  = JSON.parse(catsAttr);
-        var order = orderAttr.split('|');
-        var iconsAttr = container.getAttribute('data-cat-icons');
-        var catIcons  = iconsAttr ? JSON.parse(iconsAttr) : {};
-        var grp = container.querySelector('#sel_bio_ds .shiny-options-group') ||
-                  document.getElementById('sel_bio_ds');
-        if (!grp) return;
-        var items = Array.prototype.slice.call(
-          grp.querySelectorAll(':scope > .checkbox, :scope > .form-check'));
-        if (items.length === 0) return;
-        container.dataset.ccTreeBuilt = '1';
-
-        var byCat = {};
-        order.forEach(function (c) { byCat[c] = []; });
-        items.forEach(function (item) {
-          var input = item.querySelector('input[type=checkbox]');
-          if (!input) return;
-          var cat = cats[input.value] || 'Other';
-          if (!byCat[cat]) byCat[cat] = [];
-          byCat[cat].push(item);
-        });
-
-        var wrap = document.createElement('div');
-        wrap.className = 'cc-ds-tree-body';
-
-        order.forEach(function (cat) {
-          var catItems = byCat[cat];
-          if (!catItems || catItems.length === 0) return;
-
-          var section = document.createElement('div');
-          // collapsed by default -- the panel opens as a short category list
-          // ('click a category to expand it'), matching the FilterSummary mockup
-          section.className = 'cc-ds-cat cc-ds-cat-collapsed';
-
-          var head = document.createElement('div');
-          head.className = 'cc-ds-cat-head';
-
-          var arrow = document.createElement('span');
-          arrow.className = 'cc-ds-cat-arrow';
-          arrow.textContent = '\u25BE';
-
-          var check = document.createElement('input');
-          check.type = 'checkbox';
-          check.className = 'cc-ds-cat-check';
-
-          var label = document.createElement('strong');
-          label.textContent = cat;
-
-          var count = document.createElement('span');
-          count.className = 'small text-muted cc-ds-cat-count';
-
-          head.appendChild(arrow);
-          head.appendChild(check);
-          if (catIcons[cat]) {
-            var tile = document.createElement('span');
-            tile.className = 'cc-ds-cat-tile';
-            var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('viewBox', '0 0 24 24');
-            svg.setAttribute('width', '15');
-            svg.setAttribute('height', '15');
-            svg.setAttribute('fill', 'none');
-            svg.setAttribute('stroke', 'currentColor');
-            svg.setAttribute('stroke-width', '1.7');
-            svg.innerHTML = catIcons[cat];
-            tile.appendChild(svg);
-            head.appendChild(tile);
-          }
-          head.appendChild(label);
-          head.appendChild(count);
-
-          var body = document.createElement('div');
-          body.className = 'cc-ds-cat-body';
-          catItems.forEach(function (item) { body.appendChild(item); });
-
-          head.addEventListener('click', function (e) {
-            if (e.target === check) return;
-            section.classList.toggle('cc-ds-cat-collapsed');
-          });
-
-          check.addEventListener('click', function (e) { e.stopPropagation(); });
-          check.addEventListener('change', function () {
-            catItems.forEach(function (item) {
-              var input = item.querySelector('input[type=checkbox]');
-              if (input) input.checked = check.checked;
-            });
-            grp.dispatchEvent(new Event('change', { bubbles: true }));
-          });
-
-          section.appendChild(head);
-          section.appendChild(body);
-          wrap.appendChild(section);
-        });
-
-        grp.appendChild(wrap);
-
-        function refreshCounts() {
-          var totalChecked = 0, totalAll = 0;
-          wrap.querySelectorAll('.cc-ds-cat').forEach(function (section) {
-            var body  = section.querySelector('.cc-ds-cat-body');
-            var boxes = body.querySelectorAll('input[type=checkbox]');
-            var n = 0;
-            boxes.forEach(function (b) { if (b.checked) n++; });
-            totalChecked += n;
-            totalAll     += boxes.length;
-            var countEl = section.querySelector('.cc-ds-cat-count');
-            if (countEl) countEl.textContent = n + '/' + boxes.length;
-            var catCheck = section.querySelector('.cc-ds-cat-check');
-            if (catCheck) {
-              catCheck.checked = n === boxes.length;
-              catCheck.indeterminate = n > 0 && n < boxes.length;
-            }
-          });
-          var totalEl = document.getElementById('ds_tree_total');
-          if (totalEl) totalEl.textContent = totalChecked + ' of ' + totalAll + ' included';
-        }
-
-        grp.addEventListener('change', function (e) {
-          if (e.target.classList.contains('cc-ds-cat-check')) return;
-          refreshCounts();
-        });
-
-        refreshCounts();
+      function refreshDsTotal(grp) {
+        var boxes = grp.querySelectorAll('input[type=checkbox]');
+        var n = 0;
+        boxes.forEach(function (b) { if (b.checked) n++; });
+        var totalEl = document.getElementById('ds_tree_total');
+        if (!totalEl) return;
+        totalEl.textContent = (n === 0 || n >= boxes.length) ?
+          ('All ' + boxes.length + ' datasets') :
+          (n + ' of ' + boxes.length + ' datasets');
       }
-
+      document.addEventListener('change', function (e) {
+        var grp = e.target.closest && e.target.closest('#sel_bio_ds');
+        if (grp) refreshDsTotal(grp);
+      });
       var observer = new MutationObserver(function () {
-        var el = document.getElementById('cc_ds_tree');
-        if (el) buildTree(el);
+        var grp = document.getElementById('sel_bio_ds');
+        if (grp && !grp.dataset.ccDsInit) {
+          grp.dataset.ccDsInit = '1';
+          refreshDsTotal(grp);
+        }
       });
       observer.observe(document.body, { childList: true, subtree: true });
     })();
@@ -1987,9 +2329,14 @@ ui <- function(req) page_navbar(
         this.extraId  = root.getAttribute('data-extra-id') || null;
         this.extraLbl = root.getAttribute('data-extra-label') || '';
         this.extraTip = root.getAttribute('data-extra-tip') || '';
-        this.openGroup = null;
-        this.drillGroup = null;
-        this.drillBatch = 50;
+        // which groups the user has explicitly collapsed -- every group
+        // starts open (nothing to click before you can browse); closing one
+        // is opt-in, tracked here as a set keyed by group value
+        this.closedGroups = {};
+        // groups whose 'Show all' link was clicked -- lifts the 3-item
+        // preview cap and lists everything inline, in the same panel,
+        // instead of switching to a separate drill-down screen
+        this.expandedGroups = {};
       }
 
       CCCombo.prototype.instance = function () { return this.select && this.select.selectize; };
@@ -2102,14 +2449,8 @@ ui <- function(req) page_navbar(
       CCCombo.prototype.open = function () {
         if (this.root.classList.contains('cc-combo2-open')) return;
         this.root.classList.add('cc-combo2-open');
-        var cur = this.currentValue();
-        var curGroup = null;
-        if (cur) {
-          var inst = this.instance();
-          var opt = inst && inst.options[cur];
-          if (opt && opt.optgroup) curGroup = opt.optgroup;
-        }
-        this.openGroup = curGroup;
+        // every group starts open again each time the dropdown opens
+        this.closedGroups = {};
         this.renderList('');
         document.addEventListener('mousedown', this.onDocMouseDownBound);
         document.addEventListener('keydown', this.onDocKeyDownBound);
@@ -2129,8 +2470,10 @@ ui <- function(req) page_navbar(
         var cur = this.currentValue();
 
         var html = this.extraRowHtml() +
-          '<div class=\\'cc-combo2-search\\'><input type=\\'text\\' class=\\'cc-combo2-search-input\\' placeholder=\\'' +
-          esc(this.mainPlaceholder) + '\\' value=\\'' + esc(query || '') + '\\'></div>' +
+          '<div class=\\'cc-combo2-search\\'><div class=\\'cc-combo2-search-wrap\\'>' +
+          '<svg class=\\'cc-combo2-search-icon\\' viewBox=\\'0 0 16 16\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.4\\'><circle cx=\\'7\\' cy=\\'7\\' r=\\'5\\'></circle><path d=\\'M11 11l3.5 3.5\\'></path></svg>' +
+          '<input type=\\'text\\' class=\\'cc-combo2-search-input\\' placeholder=\\'' +
+          esc(this.mainPlaceholder) + '\\' value=\\'' + esc(query || '') + '\\'></div></div>' +
           '<div class=\\'cc-combo2-groups\\'>';
 
         groups.forEach(function (g) {
@@ -2142,20 +2485,25 @@ ui <- function(req) page_navbar(
           }
           if (q && items.length === 0) return;
 
-          var isOpen = q ? true : (self.flat || g.value === self.openGroup);
+          var isOpen = q ? true : (self.flat || !self.closedGroups[g.value]);
+          var prov = (window.CC_ATTRIB_PROVIDERS || {})[g.label];
           html += '<div class=\\'cc-combo2-group' + (isOpen ? ' cc-combo2-group-open' : '') + '\\' data-group=\\'' +
             esc(g.value) + '\\'>' +
             '<div class=\\'cc-combo2-group-head\\' data-group=\\'' + esc(g.value) + '\\'>' +
             '<span class=\\'cc-combo2-group-arrow\\'>' + (self.flat ? '' : (isOpen ? '▾' : '▸')) + '</span>' +
+            '<span class=\\'cc-combo2-group-text\\'>' +
             '<span class=\\'cc-combo2-group-name\\'>' + esc(g.label) + '</span>' +
+            (prov ? '<span class=\\'cc-combo2-group-prov\\'>' + esc(prov) + '</span>' : '') +
+            '</span>' +
             '<span class=\\'cc-combo2-group-count\\'>' + g.items.length + ' ' + esc(self.noun) + '</span>' +
             '</div>';
 
           if (isOpen) {
-            // small groups (< 12) list in full -- no drill button; larger
-            // groups preview 3 then link to the scrollable full list.
+            // small groups (< 13) list in full, no 'Show all' needed; larger
+            // groups preview 3 with a 'Show all' link that expands the rest
+            // right here (self.expandedGroups), not a separate screen.
             // flat combos always list in full.
-            var full = q || self.flat || items.length < 12;
+            var full = q || self.flat || items.length < 13 || self.expandedGroups[g.value];
             var shown = full ? items : items.slice(0, 3);
             html += '<div class=\\'cc-combo2-group-body\\'>';
             shown.forEach(function (it) {
@@ -2188,6 +2536,17 @@ ui <- function(req) page_navbar(
         }
       };
 
+      // re-render in place without the scroll position jumping back to the
+      // top -- renderList() replaces the whole panel body, which otherwise
+      // resets scroll every time a group is toggled or 'Show all' is clicked
+      CCCombo.prototype.renderListKeepScroll = function (query) {
+        var scroller = this.panel.querySelector('.cc-combo2-groups');
+        var scrollTop = scroller ? scroller.scrollTop : 0;
+        this.renderList(query);
+        var newScroller = this.panel.querySelector('.cc-combo2-groups');
+        if (newScroller) newScroller.scrollTop = scrollTop;
+      };
+
       CCCombo.prototype.wireList = function () {
         var self = this;
         var input = this.panel.querySelector('.cc-combo2-search-input');
@@ -2198,15 +2557,19 @@ ui <- function(req) page_navbar(
         if (!this.flat) this.panel.querySelectorAll('.cc-combo2-group-head').forEach(function (head) {
           head.addEventListener('click', function () {
             var gv = head.getAttribute('data-group');
-            self.openGroup = (self.openGroup === gv) ? null : gv;
-            self.renderList(input ? input.value : '');
+            self.closedGroups[gv] = !self.closedGroups[gv];
+            self.renderListKeepScroll(input ? input.value : '');
           });
         });
         this.panel.querySelectorAll('.cc-combo2-item').forEach(function (el) {
           el.addEventListener('click', function () { self.select_(el.getAttribute('data-value')); });
         });
         this.panel.querySelectorAll('.cc-combo2-showall').forEach(function (el) {
-          el.addEventListener('click', function () { self.openDrill(el.getAttribute('data-group')); });
+          el.addEventListener('click', function () {
+            var gv = el.getAttribute('data-group');
+            self.expandedGroups[gv] = true;
+            self.renderListKeepScroll(input ? input.value : '');
+          });
         });
       };
 
@@ -2237,8 +2600,10 @@ ui <- function(req) page_navbar(
           '<strong class=\\'cc-combo2-drill-name\\'>' + esc(g.label) + '</strong>' +
           '<span class=\\'cc-combo2-drill-count\\'>' + g.items.length + ' ' + esc(self.noun) + '</span>' +
           '</div>' +
-          '<div class=\\'cc-combo2-search\\'><input type=\\'text\\' class=\\'cc-combo2-drill-search-input\\' placeholder=\\'Search within ' +
-          esc(g.label) + '…\\' value=\\'' + esc(query || '') + '\\'></div>' +
+          '<div class=\\'cc-combo2-search\\'><div class=\\'cc-combo2-search-wrap\\'>' +
+          '<svg class=\\'cc-combo2-search-icon\\' viewBox=\\'0 0 16 16\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'1.4\\'><circle cx=\\'7\\' cy=\\'7\\' r=\\'5\\'></circle><path d=\\'M11 11l3.5 3.5\\'></path></svg>' +
+          '<input type=\\'text\\' class=\\'cc-combo2-drill-search-input\\' placeholder=\\'Search within ' +
+          esc(g.label) + '…\\' value=\\'' + esc(query || '') + '\\'></div></div>' +
           '<div class=\\'cc-combo2-drill-list\\'>';
 
         shown.forEach(function (it) {
@@ -2349,6 +2714,23 @@ ui <- function(req) page_navbar(
             window.dispatchEvent(new Event('resize'));
           }, 200);
         });
+        // rail icon (visible only while collapsed, see the CSS): re-expand,
+        // open that section if a header collapsed it shut, and scroll to it
+        p.querySelectorAll('.cc-panel-rail-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            p.classList.remove('is-collapsed');
+            var sec = document.getElementById('cc-sec-' + btn.dataset.sec);
+            if (sec) {
+              sec.classList.remove('is-shut');
+              setTimeout(function () {
+                sec.scrollIntoView({ block: 'start', behavior: 'smooth' });
+              }, 50);
+            }
+            setTimeout(function () {
+              window.dispatchEvent(new Event('resize'));
+            }, 200);
+          });
+        });
         // the Summarize Within / Restrict-map selectize dropdowns render at
         // <body> level (dropdownParent), so they do NOT track the input when
         // the panel scrolls -- close any open one on scroll instead of letting
@@ -2393,18 +2775,29 @@ ui <- function(req) page_navbar(
       div(
         class = "cc-map-wrap html-fill-item html-fill-container",
         style = "position: relative;",
-        # compact title pills floated inside the map (CSS .cc-map-title). The
-        # species pill shows on every Map view; the environmental one only in
-        # the side-by-side split, positioned over the right pane.
+        # compact title pills floated inside the map (CSS .cc-map-title),
+        # ALWAYS rendered here and never moved -- pure CSS decides which one
+        # shows and where (see the .cc-map-title-env / .cc-swipe-show-env
+        # rules in ui.R's <style>, and updateSwipeTitle() in its <script>).
+        # An earlier design physically relocated these divs into the map
+        # widget's own pane containers so they'd clip themselves for free;
+        # that broke every time Compare/Split/Swipe was toggled, because
+        # toggling rebuilds the widget's DOM and destroys whatever had been
+        # moved into it. No conditionalPanel needed either -- both pills
+        # always exist, display:none/block is all CSS.
         # pointer-events:none (on .cc-map-titles) keeps map drag untouched.
         div(
           class = "cc-map-titles",
           div(class = "cc-map-title cc-map-title-sp",
-              textOutput("map_title_sp", inline = TRUE)),
-          conditionalPanel(
-            "input.cmp_layout == 'split' && input.cmp_env_toggle",
-            div(class = "cc-map-title cc-map-title-env",
-                textOutput("map_title_env", inline = TRUE)))),
+              textOutput("map_title_sp", inline = TRUE),
+              span(class = "cc-map-title-info",
+                   popover(bs_icon("info-circle"), uiOutput("map_title_sp_pop"),
+                           title = "Data source"))),
+          div(class = "cc-map-title cc-map-title-env",
+              textOutput("map_title_env", inline = TRUE),
+              span(class = "cc-map-title-info",
+                   popover(bs_icon("info-circle"), uiOutput("map_title_env_pop"),
+                           title = "Data source")))),
         maplibreCompareOutput("map", width = "100%", height = "100%"))) ),
 
   nav_panel(
@@ -2478,6 +2871,15 @@ ui <- function(req) page_navbar(
   nav_item(
     # starts in the theme the request asks for (?theme= / cc_theme cookie)
     input_dark_mode(id = "dark_toggle", mode = calcofi4r::cc_theme(req)) ),
+
+  nav_panel(
+    "Data Sources",
+    div(
+      class = "cc-util-bar",
+      actionLink("close_datasources",
+                 tagList(bs_icon("x-lg"), "Close"),
+                 class = "cc-util-close")),
+    datasources_html ),
 
   nav_panel(
     "About",

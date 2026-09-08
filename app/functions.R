@@ -176,11 +176,15 @@ get_taxon_parentage <- function(taxonID, con, authority = "WoRMS"){
 #'
 #' @param sp_name Character vector of picker labels, "Common (rank: Scientific)"
 #' @param ck_children Include taxonomic children of the selected taxa
+#'   (default: FALSE, matching the "Include taxonomic children" checkbox the
+#'   taxa combo renders. This defaulted to TRUE while every caller had moved
+#'   to FALSE, so the next caller to omit it would silently have re-enabled
+#'   the descendant walk.)
 #'
 #' @return list with \code{taxon_keys} (character `taxon_key`s)
 #'
 #' @export
-resolve_sp_ids <- function(sp_name, ck_children = TRUE) {
+resolve_sp_ids <- function(sp_name, ck_children = FALSE) {
   # Memoized: a Submit resolves the same selection twice — once for get_sp()'s
   # table query and once for the tile SQL — and the children walk runs one
   # recursive CTE PER selected taxon, so a 50-taxon selection is 50 round trips
@@ -193,15 +197,26 @@ resolve_sp_ids <- function(sp_name, ck_children = TRUE) {
   # Joined on taxon_key, not worms_id, and NOT filtered to authority WoRMS: the
   # seabirds and marine mammals key `itis:`, and scoping this join to one
   # authority is what left them with no taxonRank and no hierarchy to walk.
+  # collect() before the string mutations below, to exactly mirror global.R's
+  # d_sp -- substr()/nchar() don't translate to this backend's SQL when
+  # nested, and the capitalization must match d_sp's or a taxon whose common
+  # name got capitalized there (e.g. "diatoms" -> "Diatoms") stops matching
+  # here, silently resolving to zero rows (see the format-drift warning above)
   sp_taxon <- tbl(con, "species") |>
     left_join(
       tbl(con, "taxon"),
       by = join_by(taxon_key == taxonID)) |>
+    select(scientific_name, common_name, taxonRank, taxon_key) |>
+    collect() |>
     mutate(
       rank_part = ifelse(
         is.na(taxonRank) | taxonRank == "",
         "",
         paste0(tolower(taxonRank), ": ")),
+      common_name = ifelse(
+        is.na(common_name) | common_name == "",
+        common_name,
+        paste0(toupper(substr(common_name, 1, 1)), substr(common_name, 2, nchar(common_name)))),
       name_part = ifelse(
         is.na(common_name) | common_name == "",
         "",
@@ -210,8 +225,7 @@ resolve_sp_ids <- function(sp_name, ck_children = TRUE) {
 
   sel <- sp_taxon |>
     filter(name %in% sp_name) |>
-    select(name, scientific_name, taxon_key) |>
-    collect()
+    select(name, scientific_name, taxon_key)
 
   if (ck_children) {
     # walks whichever authority's tree the key belongs to — WoRMS for most,
@@ -240,7 +254,7 @@ resolve_sp_ids <- function(sp_name, ck_children = TRUE) {
 sp_ids_cache <- new.env(parent = emptyenv())
 
 
-get_sp <- function(sp_name, qtr, date_range, ck_children = TRUE, datasets = NULL) {
+get_sp <- function(sp_name, qtr, date_range, ck_children = FALSE, datasets = NULL) {
   if (debug)
     message(
       "get_sp: sp_name = ", paste(sp_name, collapse = ", "),
@@ -743,7 +757,7 @@ prep_sp_poly <- function(df_sp, sel_layer) {
     mutate(
       tooltip = paste0(
         "<strong>", spatial_name, "</strong>",
-        "<br>Avg. CPUE (", unit, "): ", round(value, 2),
+        "<br>Avg. CPUE (", fmt_cpue_unit(unit), "): ", round(value, 2),
         "<br>Num. Obs.: ", n,
         "<br>Date Range: ", as.Date(min_dtime), " to ", as.Date(max_dtime)))
 
@@ -2017,25 +2031,25 @@ bio_ds_label <- function(selected, n_all = nrow(d_bio_datasets)) {
   else                      sprintf("%d of %d datasets", n, n_all)
 }
 
-#' Datasets Tree for the Filters Panel
+#' Datasets List for the Filters Panel
 #'
-#' The Filters panel's "Datasets" section (per the approved mockup) --
-#' \code{sel_bio_ds} grouped into 4 everyday categories (Fish / Crustaceans /
-#' Plankton / Birds & Mammals; see \code{global.R::BIO_DATASET_CATEGORY})
-#' instead of one flat list.
+#' The Filters panel's "Datasets" section: a single flat, always-visible list
+#' of \code{sel_bio_ds} checkboxes -- one row per dataset, sorted by category
+#' (Fish / Crustaceans / Plankton / Birds & Mammals; see
+#' \code{global.R::BIO_DATASET_CATEGORY}) with a small category tag on the
+#' right of each row, rather than a grouped tree or a wrapping row of pills.
 #'
-#' \code{sel_bio_ds} itself is rendered ONCE, unchanged (same id, same
-#' choices/selected as always) -- the grouping is a pure client-side
-#' re-parenting of its checkbox \code{<div>}s into category wrappers, done by
-#' the script in ui.R (search for \code{cc_ds_tree}). That script only ever
-#' moves nodes to a deeper spot INSIDE \code{#sel_bio_ds}'s own subtree, never
-#' out of it, so Shiny's \code{$(el).find('input:checked')} value collection
-#' (which searches the whole subtree regardless of nesting) still sees every
-#' checkbox -- the reactive value is exactly what it always was, only its
-#' visual arrangement changed. The category-level "select all in this group"
-#' checkboxes are pure UI sugar with no Shiny id of their own; they just
-#' check/uncheck their real children and dispatch a \code{change} event,
-#' mirroring the "Select all" button the old Datasets popover already used.
+#' This replaced two earlier designs in the same 2026-09-07 session (the
+#' original collapsed-by-default category tree, then a toggle-chip layout)
+#' after Betty reviewed 5 mockups side by side and picked this one --
+#' "searchable flat list" minus the search box, since 10 datasets is too few
+#' to need searching. \code{sel_bio_ds} itself is unchanged underneath: still
+#' the one real \code{checkboxGroupInput}, still \code{dataset_key} values,
+#' still collected as a flat vector -- only \code{choiceNames} carries custom
+#' HTML per row (name + tag) instead of a plain string label, so no
+#' client-side re-parenting/grouping JS is needed at all (the previous two
+#' designs each needed one; this one doesn't, which is part of why it's
+#' simpler to keep correct).
 #'
 #' This card lives inside \code{modal_edit_filters()}, which only exists in
 #' the DOM once \code{showModal()} puts it there -- so, unlike the old
@@ -2048,42 +2062,61 @@ bio_ds_label <- function(selected, n_all = nrow(d_bio_datasets)) {
 #' have produced anyway -- verified by reading every call site before making
 #' this change, not assumed.
 #'
-#' @param bio_ds currently selected biological \code{dataset_key}s, so a reopen
-#'   (or a \code{?datasets=} link) does not silently reset the tree to every
-#'   dataset; \code{NULL} selects them all
+#' Because \code{modal_edit_filters()} rebuilds this whole card from scratch
+#' every time \code{showModal()} runs, whatever \code{selected} this function
+#' was called with is what \code{sel_bio_ds} resets to the instant the modal
+#' reopens -- a hardcoded "always every dataset" here means Applying a
+#' narrowed selection and reopening the modal shows all datasets checked
+#' again, as if nothing had been filtered (bug report 2026-09-07: "when i
+#' filter to a certain dataset. then apply. then hit edit filters again, it
+#' does not show the dataset that was filtered. it just shows all 10
+#' again"). \code{selected} defaults to every dataset only so a first-ever
+#' open (before anything has been applied) still starts unfiltered; every
+#' later open should be passed the LAST APPLIED selection -- see
+#' \code{modal_edit_filters()}'s \code{bio_datasets} param, and server.R's
+#' \code{edit_filters} observer, which is what makes qtr/date_range/depth_range
+#' survive a reopen the same way.
+#'
+#' @param selected character vector of dataset_key currently applied;
+#'   defaults to every dataset (the correct state only on a session's first,
+#'   never-yet-applied open of this modal)
 #'
 #' @return a \code{tagList} for the Filters panel's "Datasets" section
 #'
 #' @importFrom shiny checkboxGroupInput
-#' @importFrom jsonlite toJSON
 #'
 #' @export
-dataset_category_tree_ui <- function(bio_ds = NULL) {
-  bio_ds <- if (is.null(bio_ds)) d_bio_datasets$dataset_key
-            else intersect(bio_ds, d_bio_datasets$dataset_key)
+dataset_list_picker_ui <- function(selected = d_bio_datasets$dataset_key) {
   cat_order <- c("Fish", "Crustaceans", "Plankton", "Birds & Mammals")
   cats      <- c(intersect(cat_order, unique(d_bio_datasets$category)),
                  setdiff(unique(d_bio_datasets$category), cat_order))
 
-  cat_map <- setNames(as.list(d_bio_datasets$category), d_bio_datasets$dataset_key)
+  # flat order, grouped by category (Fish rows together, then Crustaceans,
+  # ...) so the tag column alone is enough to read the grouping -- no
+  # section headers or "All"-per-category control needed at 10 datasets.
+  ord <- order(match(d_bio_datasets$category, cats), d_bio_datasets$label)
+  df  <- d_bio_datasets[ord, , drop = FALSE]
 
-  # small inline SVG glyph per category, matching the FilterSummary mockup's
-  # rounded icon tiles. Kept as single-quoted R strings (so the embedded `"`
-  # attribute quotes need no escaping) and handed to the tree-builder JS in
-  # ui.R via a data attribute -- htmltools escapes it into the attribute, and
-  # the JS assigns it with innerHTML, so no R-string-literal quote-eating risk.
-  cat_icons <- list(
-    "Fish"           = '<path d="M2 12c3-4 9-6 14-4l4 4-4 4c-5 2-11 0-14-4z"/><circle cx="7" cy="11" r="0.9" fill="currentColor" stroke="none"/>',
-    "Crustaceans"    = '<ellipse cx="6" cy="12" rx="2.6" ry="1.6"/><ellipse cx="12" cy="12" rx="2.6" ry="1.6"/><ellipse cx="18" cy="12" rx="2.6" ry="1.6"/>',
-    "Plankton"       = '<circle cx="12" cy="12" r="4.5"/><line x1="12" y1="3" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="21"/><line x1="3" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="21" y2="12"/>',
-    "Birds & Mammals" = '<path d="M3 14c3-4 6-4 9 0 3-4 6-4 9 0"/>')
+  # dataset_short_label() is scalar-only (its DATASET_LABELS[[key]] lookup
+  # errors on a multi-element index) -- every other call site in the app
+  # already respects that, applying it per-key inside a loop/lapply rather
+  # than handing it a whole vector at once; do the same here.
+  labels <- vapply(df$dataset_key, dataset_short_label, character(1), USE.NAMES = FALSE)
+
+  # unname() matters: Map()/mapply() names its result from the first
+  # argument's own values when that argument is an unnamed character vector
+  # (labels here) -- checkboxGroupInput's normalizeChoicesArgs() rejects a
+  # *named* choiceNames/choiceValues outright ("must not be named"), so a
+  # named list here breaks the whole picker even though every element is
+  # otherwise exactly what's wanted.
+  choice_names <- unname(Map(function(lab, cat) {
+    tagList(
+      tags$span(class = "cc-ds-row-name", lab),
+      tags$span(class = "cc-ds-row-tag", toupper(cat)))
+  }, labels, df$category))
 
   div(
-    class = "cc-ds-tree",
-    id    = "cc_ds_tree",
-    `data-categories` = as.character(jsonlite::toJSON(cat_map, auto_unbox = TRUE)),
-    `data-cat-order`  = paste(cats, collapse = "|"),
-    `data-cat-icons`  = as.character(jsonlite::toJSON(cat_icons, auto_unbox = TRUE)),
+    class = "cc-ds-list",
     div(
       class = "d-flex justify-content-between align-items-center mb-2",
       tags$span(
@@ -2092,20 +2125,17 @@ dataset_category_tree_ui <- function(bio_ds = NULL) {
       tags$span(
         id    = "ds_tree_total",
         class = "small text-muted",
-        bio_ds_label(bio_ds))),
+        bio_ds_label(selected))),
     checkboxGroupInput(
       "sel_bio_ds",
       NULL,
-      choices  = setNames(d_bio_datasets$dataset_key, d_bio_datasets$label),
-      # the CURRENT selection, not "all": the modal is rebuilt on every open, and
-      # rendering it with every box checked made input$sel_bio_ds all-datasets
-      # the moment it opened -- which wiped a ?datasets= link (the URL-sync
-      # observer then rewrote the link to all ten) and any narrowing by hand
-      selected = bio_ds,
-      width    = "100%"),
+      choiceNames  = choice_names,
+      choiceValues = df$dataset_key,
+      selected     = selected,
+      width        = "100%"),
     div(
       class = "small text-muted",
-      "Click a category to expand it and toggle individual datasets.")
+      "Uncheck a dataset to exclude it from the map and species list.")
   )
 }
 
@@ -2123,7 +2153,7 @@ dataset_category_tree_ui <- function(bio_ds = NULL) {
 #' Per the approved mockup, this card shows the search box alone -- no
 #' Datasets picker inline. That control (\code{sel_bio_ds}) still exists with
 #' the same id and choices; it moved into \code{modal_edit_filters()}'s
-#' Datasets tree, alongside Depth/Layers/Time, since the mockup's top bar
+#' Datasets list, alongside Depth/Layers/Time, since the mockup's top bar
 #' never shows a dataset toggle. Also: single-select now (\code{multiple =
 #' FALSE}), matching the mockup showing exactly one taxon at a time -- this
 #' session's own earlier multi-select was never something Betty asked for or
@@ -2142,7 +2172,21 @@ dataset_category_tree_ui <- function(bio_ds = NULL) {
 #'
 #' @export
 top_bar_taxa_ui <- function() {
+  # dataset LABEL -> "Program (Institution)" lookup, embedded once as JSON so
+  # the .cc-combo2 JS (ui.R's CCCombo) can show a provider line under each
+  # group header without a server round-trip. Keyed by dataset_label(key) --
+  # the release's own short name when it has one, NOT the static
+  # DATASET_LABELS string -- because that release-first name is exactly what
+  # sp_choices()/env_var_choices() use as the optgroup label the JS sees; a
+  # release with its own dataset_name_short would otherwise never match.
+  providers_by_key   <- attrib_provider_summary(names(DATASET_LABELS))
+  providers_by_label <- setNames(as.character(providers_by_key),
+                                  dataset_label(names(providers_by_key)))
+
   tagList(
+    tags$script(HTML(sprintf(
+      "window.CC_ATTRIB_PROVIDERS = %s;",
+      jsonlite::toJSON(as.list(providers_by_label), auto_unbox = TRUE)))),
     div(class = "cc-card-label small text-muted text-uppercase mb-1", "Species / Taxa"),
     div(
       # .cc-combo2: the custom grouped/drilldown search panel (matching the
@@ -2224,7 +2268,13 @@ top_bar_taxa_ui <- function() {
       div(
         class = "cc-combo2-extra-src",
         checkboxInput("ck_children", label = "Include taxonomic children",
-                      value = TRUE)))
+                      # off by default: most picks here are specific, curated
+                      # entries (e.g. "Decapods -- Dungeness Crab Megalopae"),
+                      # not a taxonomic node meant to be browsed broadly, and
+                      # a broad order/family node has plenty of descendants to
+                      # pull in unrelated programs' data if this defaulted on
+                      # (see the cpue_unit mixing this exact case turned up)
+                      value = FALSE)))
   )
 }
 
@@ -2481,6 +2531,15 @@ map_panel_ui <- function() {
     tags$span(class = "cc-sec-title", label),
     bs_icon("chevron-down", class = "cc-sec-chev"))
 
+  # one entry per tags$section below (sec id, icon, label) -- kept as a single
+  # list so the rail and the section headers can't quietly drift apart
+  rail_secs <- list(
+    list(sec = "summary", icon = "funnel",       label = "Filter Summary"),
+    list(sec = "stats",   icon = "bar-chart",     label = "Summary Statistics"),
+    list(sec = "options", icon = "sliders",       label = "Plot Options"),
+    list(sec = "download",icon = "download",      label = "Download Data"),
+    list(sec = "sources", icon = "info-circle",   label = "Sources & Citations"))
+
   div(
     class = "cc-panel",
     div(
@@ -2493,6 +2552,19 @@ map_panel_ui <- function() {
           type = "button", class = "cc-panel-toggle",
           `aria-label` = "Collapse panel", title = "Collapse panel",
           bs_icon("chevron-left"))),
+      # collapsed-panel icon rail: hidden while the panel is open (CSS), shown
+      # in its place once collapsed to the 40px strip -- clicking an icon
+      # re-expands the panel, opens that section and scrolls to it. Previously
+      # collapsing just hid .cc-panel-scroll outright with nothing standing in
+      # for it, so the strip had nothing clickable on it at all (bug report
+      # 2026-09-07: "when you click collapse pane it should show icons right
+      # now its just empty").
+      div(
+        class = "cc-panel-rail",
+        lapply(rail_secs, function(s) tags$button(
+          type = "button", class = "cc-panel-rail-btn", `data-sec` = s$sec,
+          `aria-label` = s$label, title = s$label,
+          bs_icon(s$icon)))),
       div(
         class = "cc-panel-scroll",
 
@@ -2540,6 +2612,9 @@ map_panel_ui <- function() {
               # render the dropdown at <body> level so it is not clipped by the
               # panel's own overflow scroll, and give it room
               options  = list(dropdownParent = "body")),
+            # only renders when the current selection is published in more
+            # than one cpue_unit -- see filter_cpue_unit()/cpue_unit_selector_ui()
+            uiOutput("cpue_unit_selector"),
             uiOutput("poly_note"),
             # Restrict the map (and the plot/download data) to one boundary
             # layer's polygons -- the hexes stay hexes, just clipped to that
@@ -2581,16 +2656,9 @@ map_panel_ui <- function() {
         # absent, so the two numericInputs were dropped as noise for most users.
         tags$section(
           class = "cc-sec is-shut", id = "cc-sec-download",
-          sec_head("download", "download", "Download data"),
+          sec_head("download", "download", "Download Data"),
           div(
             class = "cc-sec-body cc-dl-body",
-            div(
-              class = "cc-dl-hero",
-              div(class = "cc-dl-hero-h",
-                  bs_icon("box-arrow-down"), "Integrated dataset"),
-              div(class = "cc-dl-hero-d",
-                  "Species matched to environment for your current filters, with
-                   the SQL to reproduce it anywhere.")),
             tags$details(
               class = "cc-dl-more",
               tags$summary("Also include the chart data"),
@@ -2609,8 +2677,26 @@ map_panel_ui <- function() {
                 c("Raw environmental data" = "raw_env",
                   "Raw species data"       = "raw_sp"),
                 width = "100%")),
-            downloadButton("download_data", "Download",
-                           class = "btn-primary w-100")))))
+            div(
+              class = "cc-dl-actions",
+              downloadButton("download_data", "Download",
+                             class = "btn-primary w-100"),
+              actionButton("btn_cite_data", tagList(bs_icon("quote"), "Cite this data"),
+                           class = "btn-outline-secondary w-100")))),
+
+        # Provider + citation info for whatever species + environmental
+        # variable are currently shown -- the left-panel counterpart to the
+        # Data Sources tab. Moved to the bottom, under Download, since it's
+        # the least likely section someone opens first. Starts collapsed like
+        # Filter Summary. Citations show inline here (no separate "Dataset
+        # citations & license" toggle under Download anymore -- that repeated
+        # this same content); "Cite this data" above stays as the one-click
+        # copy-everything shortcut, and the "View full citation" link inside
+        # still jumps to the full tab for PI/provider + acknowledgement text.
+        tags$section(
+          class = "cc-sec is-shut", id = "cc-sec-sources",
+          sec_head("sources", "info-circle", "Sources & Citations"),
+          div(class = "cc-sec-body", uiOutput("data_sources_box")))))
   )
 }
 
@@ -2724,11 +2810,21 @@ top_bar_env_ui <- function(env_var = "temperature") {
 #' (\code{top_bar_taxa_ui()}/\code{top_bar_env_ui()}); everything here is
 #' set-once/rarely-touched and collapses behind the "Edit filters" link.
 #'
-#' Like the old `modal_data()`, it is rebuilt from scratch on every open, so
-#' the currently-applied depth / quarter / date range / datasets are passed in
-#' -- anything not passed silently resets to its default the next time the
-#' user opens "Edit filters" (server.R's `edit_filters` observer supplies them
-#' from `rx$params` and `bio_ds_selected()`).
+#' Every field here IS rebuilt from scratch on each \code{showModal()} call
+#' (this whole dialog is a fresh R object every time "Edit filters" is
+#' clicked, not a persistent DOM node) -- so, despite an earlier version of
+#' this doc claiming otherwise, none of \code{sel_qtr}/\code{sel_date_range}/
+#' \code{sel_depth_range}/\code{sel_bio_ds} "just keep their own state": each
+#' one's initial value has to be threaded through as a parameter from the
+#' last APPLIED filters (\code{rx$params}, in server.R's \code{edit_filters}
+#' observer), or reopening the modal silently resets it, which is exactly
+#' what shipped broken for \code{sel_bio_ds} until this fix (bug report
+#' 2026-09-07: "when i filter to a certain dataset. then apply. then hit
+#' edit filters again, it does not show the dataset that was filtered").
+#' \code{sel_places_cat} lives in the separate \code{modal_spatial_filter()}
+#' dialog (reached via this one's "Layers" > "Change" link) and has the same
+#' shape of gap -- not fixed here, since narrowing it down needs its own look
+#' at how \code{rx$sel_places} ties to a category.
 #'
 #' \code{sel_qtr} is now \code{shinyWidgets::checkboxGroupButtons()} (a row of
 #' toggle pills, matching the mockup) instead of a multi-select dropdown, and
@@ -2753,17 +2849,40 @@ top_bar_env_ui <- function(env_var = "temperature") {
 #' @param qtr current applied quarter selection; defaults to all four
 #' @param date_range current applied date range; defaults to the full
 #'   min_max_date span
-#' @param bio_ds currently selected biological \code{dataset_key}s (see
-#'   \code{dataset_category_tree_ui()}); \code{NULL} selects every dataset
+#' @param bio_datasets current applied dataset_key selection; defaults to
+#'   every dataset (see dataset_list_picker_ui() -- same "reopen loses the
+#'   filter" bug qtr/date_range/depth_range were already fixed for)
 modal_edit_filters <- function(depth_range = c(0, 515),
                                 qtr = 1:4,
                                 date_range = min_max_date,
-                                bio_ds = NULL) {
+                                bio_datasets = d_bio_datasets$dataset_key) {
   modalDialog(
     title = tagList("Filters", modal_x_btn()),
     class = "cc-filters-modal",
 
-    dataset_category_tree_ui(bio_ds),
+    # Order (2026-09-07 request): Time, Depth, Layers, then Datasets last --
+    # the dataset tree is the longest/most involved section (checkboxes,
+    # nested categories), so it now sits at the bottom instead of pushing the
+    # other three below the fold.
+    div(
+      class = "d-flex align-items-center gap-2 mb-2",
+      bs_icon("calendar3"), tags$strong("Time")),
+    checkboxGroupButtons(
+      "sel_qtr",
+      label    = NULL,
+      choices  = c(Q1 = 1, Q2 = 2, Q3 = 3, Q4 = 4),
+      selected = qtr,
+      status   = "outline-primary",
+      size     = "sm"),
+    dateRangeInput(
+      "sel_date_range",
+      label     = NULL,
+      startview = "year",
+      start = date_range[1],
+      end   = date_range[2],
+      min   = min_max_date[1],
+      max   = min_max_date[2],
+      width = "100%"),
     hr(),
 
     div(
@@ -2801,25 +2920,7 @@ modal_edit_filters <- function(depth_range = c(0, 515),
       actionLink("edit_spatial", "Change", class = "flex-shrink-0")),
     hr(),
 
-    div(
-      class = "d-flex align-items-center gap-2 mb-2",
-      bs_icon("calendar3"), tags$strong("Time")),
-    checkboxGroupButtons(
-      "sel_qtr",
-      label    = NULL,
-      choices  = c(Q1 = 1, Q2 = 2, Q3 = 3, Q4 = 4),
-      selected = qtr,
-      status   = "outline-primary",
-      size     = "sm"),
-    dateRangeInput(
-      "sel_date_range",
-      label     = NULL,
-      startview = "year",
-      start = date_range[1],
-      end   = date_range[2],
-      min   = min_max_date[1],
-      max   = min_max_date[2],
-      width = "100%"),
+    dataset_list_picker_ui(selected = bio_datasets),
 
     footer = tagList(
       actionLink("reset_filters", "Reset all", class = "me-auto text-muted"),
@@ -2841,11 +2942,21 @@ modal_edit_filters <- function(depth_range = c(0, 515),
 #' only the trigger that opens this dialog moved (`input$edit_spatial`
 #' instead of being rendered as part of `input$edit_filters`).
 #'
-#' @param cat the category the current \code{rx$sel_places} names belong to.
-#'   The dialog is rebuilt on every open; rendering the select at its default
-#'   while the picked names came from another category left
-#'   \code{input$sel_places_cat} and \code{rx$sel_places} disagreeing, and
-#'   Apply then matched the names against the wrong category's polygons.
+#' \code{selected_cat}, added 2026-09-08, fixes the same "reopen resets to
+#' default" gap \code{dataset_list_picker_ui()} had until this same
+#' session: this dialog is rebuilt from scratch every time
+#' \code{showModal()} runs (same as \code{modal_edit_filters()}), so a
+#' hardcoded \code{selected = "CalCOFI Zones"} inside here meant switching
+#' to, say, "Ichthyoplankton Zones" and reopening "Layers" > "Change" always
+#' snapped the Category dropdown back to "CalCOFI Zones" -- not what was
+#' last being looked at. The caller (server.R's \code{edit_spatial}
+#' observer) passes \code{input$sel_places_cat}, read at the moment "Change"
+#' is clicked, i.e. before this call rebuilds (and so resets) that same
+#' input.
+#'
+#' @param selected_cat category to preselect in the "Category" dropdown;
+#'   defaults to "CalCOFI Zones" (correct only before any category has ever
+#'   been chosen this session)
 #'
 #' @return Shiny modal dialog object
 #'
@@ -2853,15 +2964,26 @@ modal_edit_filters <- function(depth_range = c(0, 515),
 #' @importFrom maplibre maplibreOutput
 #'
 #' @export
-modal_spatial_filter <- function(cat = "CalCOFI Zones") {
-  if (!cat %in% unlist(places_cat_choices)) cat <- "CalCOFI Zones"
+modal_spatial_filter <- function(selected_cat = "CalCOFI Zones") {
+  if (!selected_cat %in% unlist(places_cat_choices)) selected_cat <- "CalCOFI Zones"
   modalDialog(
     title = tagList("Area", modal_x_btn()),
+    # cc-spatial-modal: hooks this dialog into the shared centred/fit-
+    # viewport CSS in ui.R (#shiny-modal:has(.cc-spatial-modal) ...) --
+    # this modal never had a class of its own before, so it fell back to
+    # Shiny's plain top-anchored default and had to be scrolled at the
+    # BROWSER-PAGE level to see its full height (bug report 2026-09-07:
+    # "can layers be centered on page. rn need to scroll to see"). Title
+    # says "Area" to match the "Area" row in modal_edit_filters() that
+    # opens this dialog (not "Layers" -- see that row's own comment), and
+    # the validation guard (from main) keeps a stale/invalid category
+    # from ever reaching the <select>.
+    class = "cc-spatial-modal",
     "Select pre-defined zones by clicking on the map or table (some categories are table-only -- see below). Click selected zones again to deselect them. Alternatively, use the \"Custom\" category to drawn your own region of interest.",
     selectInput(
       "sel_places_cat",
       tags$b("Category"),
-      selected = cat,
+      selected = selected_cat,
       # cc_places categories (clickable map + table), then every other
       # spatial_layers.csv layer grouped by its registry group
       # (table-only -- see global.R::sample_spatial_layers), then Custom.
@@ -3021,6 +3143,590 @@ ui_placeholder <- function(title, message) {
       p(message)
     )
   )
+}
+
+#' Build the "Data Sources & Attribution" page content
+#'
+#' Reads app/data/attributions.csv -- one row per CONTRIBUTING COMPONENT, not
+#' per app dataset. A dataset the app treats as one filter option (e.g.
+#' Ichthyoplankton) is often stitched together from several distinct sources
+#' (egg counts, egg stages, larvae counts...), each with its own provider and
+#' citation, so each gets its own row here, sharing the app-level
+#' `dataset_key` that groups them back under one heading. Rendered once at
+#' app startup (ui.R), same pattern as `about_html`, since citations only
+#' change with a release, not per request. Dataset display names come from
+#' DATASET_LABELS (global.R) so this page can never drift from the names
+#' shown in filters/search elsewhere in the app.
+#'
+#' To add a dataset or component, or update a citation: edit
+#' app/data/attributions.csv (and DATASET_LABELS in global.R for a brand-new
+#' dataset_key) -- no code change needed.
+#'
+#' @return shiny.tag div element
+
+#' Is this CSV value present?
+#'
+#' `nzchar(NA_character_)` returns TRUE (R's documented backward-compatible
+#' behavior), so a genuinely empty CSV cell -- read as NA by readr -- was
+#' passing every `nzchar(x %||% "")` check in this file and rendering the
+#' literal text "NA". This is the one place that has to get it right.
+#'
+#' @param x a scalar (typically one CSV cell)
+#' @return TRUE only for a non-NA, non-empty value
+#' @export
+has_val <- function(x) !is.null(x) && length(x) > 0 && !is.na(x) && nzchar(x)
+
+#' Vectorised has_val(), safe on a whole column (NA-safe, unlike raw nzchar())
+has_val_v <- function(x) !is.na(x) & nzchar(x)
+
+#' A short license/label ("CC-BY-4.0", "Public Domain") can sit in a pill;
+#' a long one (a full ERDDAP-style disclaimer paragraph) can't -- render it
+#' as its own collapsed block instead so it doesn't turn into wall-of-text.
+#' @export
+is_short_license <- function(x) has_val(x) && nchar(x) <= 40
+
+#' When every row in a dataset group shares the exact same license/disclaimer
+#' text, it belongs on the group once, not repeated per component.
+#' @return the shared string, or NA_character_ if there's no single shared value
+#' @export
+shared_license_for <- function(g) {
+  vals <- unique(g$license[has_val_v(g$license)])
+  if (length(vals) == 1) vals else NA_character_
+}
+
+#' Collapsed "License & disclaimer" block for a long license string.
+#'
+#' Collapsed by default (`open = FALSE`) for the compact contexts this is
+#' shared with (the cite modal, the download panel) -- pass `open = TRUE`
+#' for a page like the full Data Sources & Attribution table, where there's
+#' room to show everything without a click.
+#' @export
+license_disclaimer_block <- function(text, summary_label = "License & disclaimer", open = FALSE) {
+  if (!has_val(text)) return(NULL)
+  tags$details(
+    class = "cc-license-block",
+    open = if (open) NA else NULL,
+    tags$summary(summary_label),
+    p(class = "cc-license-block-text", text))
+}
+
+attribution_table_html <- function() {
+
+  attrib <- ATTRIBUTIONS
+
+  # keep the app's existing dataset order (DATASET_LABELS' declaration order),
+  # then any dataset_key the curated map does not list, in CSV order. Ordering
+  # by match() alone put those at NA; selecting `ordered_keys %in% ...` below
+  # dropped them from the page entirely while n_datasets still counted them --
+  # a row added to attributions.csv for a newly ingested dataset would have
+  # gone missing from the one page that exists to show it.
+  ordered_keys <- union(names(DATASET_LABELS), unique(attrib$dataset_key))
+  attrib <- attrib[order(match(attrib$dataset_key, ordered_keys)), ]
+
+  # one dl-style field per non-empty value; has_val() treats a true NA (an
+  # empty CSV cell, read as NA_character_) as absent -- nzchar(NA) alone
+  # returns TRUE, which is what used to print the literal text "NA"
+  meta_dl <- function(...) {
+    pairs <- list(...)
+    rows <- Filter(Negate(is.null), pairs)
+    if (length(rows) == 0) return(NULL)
+    tags$dl(class = "cc-attrib-meta", rows)
+  }
+  meta_field <- function(label, value) {
+    if (!has_val(value)) return(NULL)
+    tagList(tags$dt(label), tags$dd(value))
+  }
+
+  # a license identical across every component of a dataset (the common case
+  # for a multi-file NOAA ERDDAP dataset) is shown once per dataset row below,
+  # never repeated verbatim in each component's own meta list
+  component_block <- function(d, show_heading, shared_license) {
+    cite_text <- d$citation %||% ""
+    own_license <- if (has_val(d$license) &&
+                       (is.na(shared_license) || !identical(d$license, shared_license)))
+      d$license else NA_character_
+    div(
+      class = "cc-attrib-component",
+      if (show_heading) div(class = "cc-attrib-comp-name", d$component),
+      div(class = "cc-attrib-cite", citation_text_html(cite_text)),
+      meta_dl(
+        meta_field("PI / provider", d$pi),
+        meta_field("License", if (is_short_license(own_license)) own_license),
+        meta_field("Acknowledge", d$acknowledgement)),
+      if (has_val(own_license) && !is_short_license(own_license))
+        license_disclaimer_block(own_license, open = TRUE),
+      if (has_val(cite_text))
+        div(class = "cc-attrib-actions",
+            citation_source_link(cite_text, d$source_url),
+            tags$button(
+              type = "button", class = "cc-attrib-copy",
+              onclick = sprintf(
+                "navigator.clipboard.writeText(%s); var b=this; b.textContent='Copied!'; setTimeout(function(){b.textContent='Copy citation';}, 1500);",
+                jsonlite::toJSON(cite_text, auto_unbox = TRUE)),
+              "Copy citation")))
+  }
+
+  rows <- lapply(ordered_keys[ordered_keys %in% attrib$dataset_key], function(key) {
+    g <- attrib[attrib$dataset_key == key, ]
+    multi  <- nrow(g) > 1
+    shared <- shared_license_for(g)
+    # summarize_programs(), not paste(): a blank `program` cell is NA and
+    # paste() stringifies it to "NA" -- see summarize_institutions()
+    programs <- summarize_programs(g$program)
+    insts    <- summarize_institutions(g$institution)
+    tags$details(
+      class = "cc-attrib-row",
+      # open on load -- this page is the one place with room to show every
+      # source without a click, unlike the compact cite modal/download panel
+      open = NA,
+      tags$summary(
+        div(class = "cc-attrib-main",
+            span(class = "cc-attrib-name", dataset_label(key)),
+            if (multi) span(class = "cc-attrib-comp-count",
+                             sprintf("%d sources", nrow(g)))),
+        div(class = "cc-attrib-provider",
+            programs, tags$span(class = "cc-attrib-inst", insts)),
+        span(class = "cc-attrib-chev", bs_icon("chevron-right"))),
+      div(class = "cc-attrib-detail",
+          lapply(seq_len(nrow(g)), function(i) component_block(g[i, ], multi, shared)),
+          if (has_val(shared)) license_disclaimer_block(shared, open = TRUE)))
+  })
+
+  n_datasets <- length(unique(attrib$dataset_key))
+
+  div(
+    class = "cc-attrib-page",
+    div(
+      class = "cc-attrib-intro",
+      h4("Data Sources & Attribution"),
+      p(class = "cc-muted",
+        "Built from the ",
+        a(href = "https://calcofi.io/docs/db.html#integrated-database-ingestion-strategy",
+          target = "_blank", "integrated database"),
+        " -- ", n_datasets, " contributing datasets (", nrow(attrib),
+        " underlying data sources) across CalCOFI, CCE-LTER, NOAA SWFSC, CDFW ",
+        "and the Farallon Institute. Click a row for the citation, license and ",
+        "required acknowledgement of each source.")),
+    div(
+      class = "cc-attrib-table",
+      div(class = "cc-attrib-thead",
+          span(class = "cc-attrib-lbl", "Dataset"),
+          span(class = "cc-attrib-lbl", "Program & provider")),
+      tagList(rows)))
+}
+
+#' Resolve one or more dataset_key values to their attribution rows
+#'
+#' ATTRIBUTIONS has one row per contributing SOURCE, not per dataset_key -- a
+#' bundled dataset (e.g. swfsc_ichthyo) has several rows sharing one key. This
+#' is the one place every other attribution touchpoint reads from.
+#'
+#' @param keys character vector of dataset_key values (NAs / dupes tolerated)
+#' @return a data.frame slice of ATTRIBUTIONS, possibly zero rows
+#' @export
+attrib_rows_for <- function(keys) {
+  keys <- unique(keys[!is.na(keys) & nzchar(keys)])
+  if (length(keys) == 0) return(ATTRIBUTIONS[0, ])
+  ATTRIBUTIONS[ATTRIBUTIONS$dataset_key %in% keys, ]
+}
+
+#' Program and institution strings per dataset_key, kept separate
+#'
+#' Same grouping/collapsing as attrib_provider_summary() below, but returns
+#' the two pieces unglued -- for spots that label them separately ("Programs:"
+#' / "Providers:") instead of folding institution into a "Program (Institution)"
+#' string (2026-09-07: that combined form repeated the institution a second
+#' time right next to DATASET_LABELS' own "SWFSC:"-style prefix, which looked
+#' redundant in the map title popover and the left-panel Data Sources box).
+#'
+#' @param keys character vector of dataset_key values
+#' @return named list, one entry per unique dataset_key in `keys`, each entry
+#'   a list(program = ..., institution = ...); institution may be "" if a
+#'   source only ever states a program
+#' @export
+attrib_provider_parts <- function(keys) {
+  rows <- attrib_rows_for(keys)
+  if (nrow(rows) == 0) return(list())
+  ks <- unique(rows$dataset_key)
+  parts <- lapply(ks, function(k) {
+    g     <- rows[rows$dataset_key == k, ]
+    progs <- summarize_programs(g$program)
+    insts <- summarize_institutions(g$institution)
+    list(program = progs, institution = insts)
+  })
+  setNames(parts, ks)
+}
+
+#' One "Program(s) (Institution(s))" line per dataset_key
+#'
+#' For spots that need to NAME the source without the full citation: the
+#' search dropdown subtitle. (The map title popover and the Data Sources box
+#' show Program/Institution as separate labeled lines instead -- see
+#' attrib_provider_parts() above.)
+#'
+#' @param keys character vector of dataset_key values
+#' @return named character vector, one entry per unique dataset_key in `keys`,
+#'   in the order they first appear
+#' @export
+attrib_provider_summary <- function(keys) {
+  parts <- attrib_provider_parts(keys)
+  if (length(parts) == 0) return(character(0))
+  vals <- vapply(parts, function(p) {
+    if (nzchar(p$institution) && p$institution != p$program)
+      paste0(p$program, " (", p$institution, ")") else p$program
+  }, character(1))
+  vals
+}
+
+#' Strip DATASET_LABELS' institution-abbreviation prefix ("SWFSC: ", "CalCOFI: ")
+#'
+#' Every DATASET_LABELS value follows "<Abbrev>: <description>" so the search
+#' dropdown optgroups read as "SWFSC > Ichthyoplankton" etc. That abbreviation
+#' just repeats what attrib_provider_parts()'s institution line already spells
+#' out immediately below it in the map title popover / Data Sources box, so
+#' those two spots show the bare description instead (2026-09-07 feedback:
+#' "the program prefix should be removed because it is just repeated on
+#' bottom"). Falls back to the full label if it doesn't match that shape.
+#'
+#' Goes through global.R::dataset_label() rather than DATASET_LABELS directly.
+#' DATASET_LABELS is the third of four fallbacks there, not the authority, and
+#' the keys reaching this function are measured live off bio_obs
+#' (dataset_list_picker_ui()) or read from attributions.csv -- either can name
+#' a dataset the curated map has never heard of. `DATASET_LABELS[[key]] %||%
+#' key` could not fall back at all: `[[` on a named atomic vector with a
+#' missing name throws "subscript out of bounds" BEFORE `%||%` is reached, so
+#' a newly ingested dataset errored the filter picker instead of showing its
+#' raw key. dataset_label() is NA-safe by construction and ends on that same
+#' raw key.
+#'
+#' @param key single dataset_key
+#' @return character(1)
+#' @export
+dataset_short_label <- function(key) {
+  lbl <- dataset_label(key)
+  sub("^[^:]+:\\s*", "", lbl)
+}
+
+#' Strip a curator's "confirmed ..." annotation off a license string
+#'
+#' `attributions.csv`'s `license` column carries editorial "how/when this was
+#' verified" notes for the curator's own reference. Useful in the CSV, not part
+#' of the license, and never shown to users -- see the `ATTRIBUTIONS` read in
+#' global.R, which is the only caller.
+#'
+#' Both forms the CSV uses are handled: parenthesised ("CC-BY-4.0 (confirmed
+#' via calcofi.org/..., 2026-09-07)") and dash-introduced ("CC BY 4.0 --
+#' confirmed via the Farallon Institute Data Sharing Agreement, 23 July
+#' 2025."). Only the parenthesised one used to be, so the dash form reached
+#' users AND -- at 87 characters -- pushed a plain CC-BY row past
+#' \code{\link{is_short_license}}'s 40-character pill threshold into a
+#' collapsed "License & disclaimer" block.
+#'
+#' Anchored on the word "confirmed" so a license whose own text contains a
+#' dash or a trailing parenthetical (the NOAA ERDDAP disclaimer, both EDI
+#' customs, the Ohman Data Use Policy) is left exactly as written.
+#'
+#' @param license character vector of `license` values
+#' @return the same vector, annotation removed and whitespace squished
+#' @export
+strip_license_annotation <- function(license) {
+  stringr::str_squish(stringr::str_remove(
+    license, "\\s*(\\(confirmed[^)]*\\)|(--|\u2014|\u2013)\\s*confirmed\\b.*)\\s*$"))
+}
+
+#' Join a dataset's per-component `program` strings, dropping blanks
+#'
+#' The `program` counterpart to \code{\link{summarize_institutions}}: an empty
+#' CSV cell reads as NA_character_ and a bare
+#' \code{paste(unique(x), collapse = "; ")} renders it as the literal text
+#' "NA" in the map title popover, the Data Sources row and the search
+#' dropdown subtitle.
+#'
+#' @param program character vector of one dataset's `program` values
+#' @return character(1); "" when no component states a program
+#' @export
+summarize_programs <- function(program) {
+  paste(unique(program[has_val_v(program)]), collapse = "; ")
+}
+
+#' Combine a dataset's per-component institution strings into one short label
+#'
+#' Some multi-component datasets (e.g. Dungeness Crab Megalopae) give each
+#' component its own institution string, and a spelled-out name repeats
+#' across components instead of collapsing to its abbreviation ("California
+#' Department of Fish and Wildlife (CDFW)" vs. "...(CDFW) / UCSD SIO" -- two
+#' different strings even though "CDFW" is the useful part of both). This
+#' splits on "/", collapses each "Full Name (ABBR)" down to "ABBR", and
+#' de-duplicates before rejoining, so the result is short and non-repetitive.
+#' @export
+summarize_institutions <- function(institution) {
+  # has_val_v(), not nzchar(): an empty CSV cell reads as NA_character_,
+  # strsplit() passes that through as an NA token, and nzchar(NA) is TRUE --
+  # so a bare nzchar() filter let paste() render the literal text "NA" as an
+  # institution. Same trap has_val() was introduced for above.
+  tokens <- unlist(strsplit(institution, "\\s*/\\s*"))
+  tokens <- gsub("[^()/]*\\(([A-Za-z0-9]+)\\)", "\\1", trimws(tokens))
+  paste(unique(tokens[has_val_v(tokens)]), collapse = " / ")
+}
+
+#' regex for a URL embedded in citation text -- must end on a non-punctuation
+#' character so a DOI followed by a sentence-ending period ("...pasta/xyz.")
+#' doesn't swallow that period
+.cc_url_re <- "https?://[^\\s<>\"']*[^\\s<>\"'.,;:)\\]]"
+
+#' Citation text with any embedded DOI/URL made clickable.
+#'
+#' @param cite_text the citation sentence (may already contain a doi/URL)
+#' @return a tagList, safe to drop straight into a div/span
+#' @export
+citation_text_html <- function(cite_text) {
+  if (!has_val(cite_text))
+    return("No formal citation has been drafted for this source yet.")
+
+  urls <- regmatches(cite_text, gregexpr(.cc_url_re, cite_text, perl = TRUE))[[1]]
+  if (length(urls) == 0) return(cite_text)
+
+  parts <- strsplit(cite_text, .cc_url_re, perl = TRUE)[[1]]
+  # strsplit drops a trailing empty piece when the string ends on a match
+  if (length(parts) < length(urls) + 1) parts <- c(parts, "")
+  pieces <- vector("list", length(urls) * 2 + 1)
+  for (i in seq_along(urls)) {
+    pieces[[2 * i - 1]] <- parts[i]
+    pieces[[2 * i]] <- tags$a(href = urls[i], target = "_blank", rel = "noopener", urls[i])
+  }
+  pieces[[length(pieces)]] <- parts[length(urls) + 1]
+  tagList(pieces)
+}
+
+#' Small "Source" link for a citation, shown as a peer action next to the
+#' Copy button rather than inline in the (often long, wrapping) citation
+#' text -- from `source_url` (attributions.csv), only when the citation text
+#' has no URL of its own to link (most of the SWFSC/NOAA ERDDAP citations,
+#' which name the dataset but don't quote a URL inline).
+#'
+#' @param cite_text the citation sentence (checked for an embedded URL)
+#' @param source_url this source's URL on file (attributions.csv), or NA --
+#'   two of the CDFW Dungeness Crab archival sources have none, since
+#'   they're unpublished archive material with nothing to link to
+#' @return an <a> tag, or NULL when the citation already links out on its
+#'   own or there's no source_url to link to
+#' @export
+citation_source_link <- function(cite_text, source_url = NA_character_) {
+  if (!has_val(source_url)) return(NULL)
+  if (has_val(cite_text) && grepl(.cc_url_re, cite_text, perl = TRUE)) return(NULL)
+  tags$a(href = source_url, target = "_blank", rel = "noopener",
+         class = "cc-cite-source-link", "Source ↗")
+}
+
+#' One reading-list "Copy citation" button, shared by the modal and detail entries
+cc_copy_button <- function(cite_text, label = "Copy citation") {
+  if (!has_val(cite_text)) return(NULL)
+  tags$button(
+    type = "button", class = "cc-cite-copylink",
+    onclick = sprintf(
+      "navigator.clipboard.writeText(%s); var b=this; b.textContent='Copied!'; setTimeout(function(){b.textContent=%s;}, 1500);",
+      jsonlite::toJSON(cite_text, auto_unbox = TRUE),
+      jsonlite::toJSON(label, auto_unbox = TRUE)),
+    label)
+}
+
+#' Full citation text for one or more datasets, as a plain reading list
+#'
+#' Drives the "Cite this data" modal: one entry per contributing source (a
+#' bundled dataset like Ichthyoplankton gets one entry per component, named
+#' "Dataset -- Component"), each showing the citation, then license and
+#' acknowledgement folded into a single fine-print line, separated by a plain
+#' divider -- no boxes, no accent color.
+#'
+#' @param keys character vector of dataset_key values
+#' @return a tagList; a muted placeholder if `keys` resolves to nothing
+#' @export
+attrib_citation_html <- function(keys) {
+  rows <- attrib_rows_for(keys)
+  if (nrow(rows) == 0)
+    return(p(class = "cc-muted",
+             "Select a species or an environmental variable to see its data source."))
+
+  ordered_keys <- names(DATASET_LABELS)
+  ks <- unique(rows$dataset_key)
+  ks <- ks[order(match(ks, ordered_keys))]
+
+  # a dataset with several components (e.g. SWFSC: Ichthyoplankton's 7 ERDDAP
+  # files) gets ONE list entry: the dataset name once as a group heading, then
+  # each component boxed underneath -- instead of repeating the full dataset
+  # name on every line, which read as a flat, ungrouped list.
+  one_component <- function(d, cite_text, own_license) {
+    fine <- paste(c(
+      if (is_short_license(own_license)) own_license,
+      if (has_val(d$acknowledgement)) d$acknowledgement), collapse = " · ")
+    div(
+      class = "cc-attrib-component",
+      div(class = "cc-attrib-comp-name", d$component),
+      div(class = "cc-cite-entry-top",
+          span(),
+          div(class = "cc-cite-actions",
+              citation_source_link(cite_text, d$source_url), cc_copy_button(cite_text))),
+      div(class = "cc-cite-mono", citation_text_html(cite_text)),
+      if (nzchar(fine)) div(class = "cc-cite-fine", fine),
+      if (has_val(own_license) && !is_short_license(own_license))
+        license_disclaimer_block(own_license))
+  }
+
+  entries <- list()
+  for (k in ks) {
+    g      <- rows[rows$dataset_key == k, ]
+    multi  <- nrow(g) > 1
+    shared <- shared_license_for(g)
+
+    if (!multi) {
+      d         <- g[1, ]
+      cite_text <- d$citation %||% ""
+      own_license <- if (has_val(d$license)) d$license else NA_character_
+      fine <- paste(c(
+        if (is_short_license(own_license)) own_license,
+        if (has_val(d$acknowledgement)) d$acknowledgement), collapse = " · ")
+      entries[[length(entries) + 1]] <- div(
+        class = "cc-cite-entry",
+        div(class = "cc-cite-entry-top",
+            span(class = "cc-cite-entry-name", dataset_label(k)),
+            div(class = "cc-cite-actions",
+                citation_source_link(cite_text, d$source_url), cc_copy_button(cite_text))),
+        div(class = "cc-cite-mono", citation_text_html(cite_text)),
+        if (nzchar(fine)) div(class = "cc-cite-fine", fine),
+        if (has_val(own_license) && !is_short_license(own_license))
+          license_disclaimer_block(own_license))
+    } else {
+      comps <- lapply(seq_len(nrow(g)), function(i) {
+        d <- g[i, ]
+        cite_text <- d$citation %||% ""
+        own_license <- if (has_val(d$license) &&
+                           (is.na(shared) || !identical(d$license, shared)))
+          d$license else NA_character_
+        one_component(d, cite_text, own_license)
+      })
+      entries[[length(entries) + 1]] <- div(
+        class = "cc-cite-entry cc-cite-group",
+        div(class = "cc-cite-entry-name cc-cite-group-name",
+            dataset_label(k),
+            span(class = "cc-attrib-comp-count", sprintf("%d sources", nrow(g)))),
+        tagList(comps),
+        if (has_val(shared)) license_disclaimer_block(shared))
+    }
+  }
+  div(class = "cc-cite-list", tagList(entries))
+}
+
+#' Compact per-source citation blocks for one dataset's attribution rows
+#'
+#' Citation text, then a license pill and an inline "Copy" link on one row,
+#' one block per contributing source -- used by the left-panel "Sources &
+#' Citations" box (server.R::data_sources_box_ui()) so a dataset's citation
+#' shows inline instead of behind a separate "Dataset citations & license"
+#' toggle, which used to repeat the same information.
+#'
+#' @param g one dataset_key's slice of ATTRIBUTIONS (see attrib_rows_for())
+#' @return a tagList
+#' @export
+dataset_citation_items <- function(g) {
+  shared <- shared_license_for(g)
+  tagList(
+    lapply(seq_len(nrow(g)), function(i) {
+      d         <- g[i, ]
+      cite_text <- d$citation %||% ""
+      # only show a license/disclaimer here if it's short (pill-worthy) or
+      # it differs from the one already shared at the dataset level below
+      own <- if (has_val(d$license) &&
+                 (is.na(shared) || !identical(d$license, shared)))
+        d$license else NA_character_
+      div(
+        class = paste("cc-dl-cite-item", if (nrow(g) > 1) "cc-dl-cite-item-multi"),
+        if (nrow(g) > 1) div(class = "cc-dl-cite-comp", d$component),
+        div(class = "cc-dl-cite-text", citation_text_html(cite_text)),
+        div(class = "cc-dl-cite-row",
+            if (is_short_license(own)) span(class = "cc-dl-cite-pill", own)
+            else span(),
+            div(class = "cc-dl-cite-actions",
+                citation_source_link(cite_text, d$source_url), cc_copy_button(cite_text, "Copy"))),
+        if (has_val(own) && !is_short_license(own)) license_disclaimer_block(own))
+    }),
+    if (has_val(shared)) license_disclaimer_block(shared))
+}
+
+#' "Cite this data" modal
+#'
+#' Full citation / license / acknowledgement text for the dataset(s) behind
+#' the currently applied species + environmental variable filters, each with
+#' its own Copy button, plus a link to the full Data Sources tab for anything
+#' not covered by the current selection. Opened from the Download panel's
+#' "Cite this data" button (server: \code{input$btn_cite_data}), the same
+#' \code{attrib_citation_html()} content also drives the panel's own
+#' "Dataset citations & license" details block.
+#'
+#' @param keys character vector of dataset_key values currently in view
+#' @return a Shiny \code{modalDialog}
+#'
+#' @importFrom shiny modalDialog tagList tags
+#' @export
+modal_cite_data <- function(keys) {
+  modalDialog(
+    title = tagList(bs_icon("quote"), "Cite this data", modal_x_btn()),
+    div(
+      class = "cc-cite-modal",
+      attrib_citation_html(keys),
+      # names the tool this export/view came from, not just the underlying
+      # dataset(s) -- app.calcofi.io/station queries the same integrated
+      # database differently, so "which CalCOFI app" is itself part of what
+      # makes a citation reproducible (user question 2026-09-05).
+      div(
+        class = "cc-cite-entry",
+        div(class = "cc-cite-entry-top",
+            span(class = "cc-cite-entry-name", "This view"),
+            div(class = "cc-cite-actions",
+                tags$a(href = APP_CITE_URL, target = "_blank", rel = "noopener",
+                       class = "cc-cite-source-link", "Open ↗"),
+                cc_copy_button(
+                  paste0("CalCOFI Hexagon Explorer. ", APP_CITE_URL), "Copy"))),
+        div(class = "cc-cite-mono",
+            paste0("CalCOFI Hexagon Explorer. ", APP_CITE_URL))),
+      p(class = "cc-muted cc-cite-more",
+        # counted from ATTRIBUTIONS, not typed: adding a row to
+        # attributions.csv is the whole workflow for a new source, and a
+        # hardcoded number silently goes stale the first time it is used
+        "Full citations, licenses, and acknowledgements for all ",
+        length(unique(ATTRIBUTIONS$dataset_key)),
+        " contributing datasets are on the ",
+        actionLink("cite_modal_datasources_link", "Data Sources"), " tab.")),
+    footer = tagList(
+      tags$button(type = "button", class = "btn btn-secondary",
+                  `data-bs-dismiss` = "modal", "Close")),
+    size = "l", easyClose = TRUE, fade = FALSE)
+}
+
+#' Which dataset_key(s) a selected species/taxon belongs to
+#'
+#' Resolves picker labels ("Common (rank: Scientific)") to `d_taxa_ds`'s
+#' dataset_key via an exact scientific_name match. Does not walk taxonomic
+#' children the way \code{resolve_sp_ids()} does -- attribution only needs to
+#' name the source, and a higher-rank taxon (family/genus) with no exact
+#' bio_obs match simply resolves to nothing, which callers show as "select a
+#' species" rather than guessing.
+#'
+#' @param sp_labels character vector of picker labels
+#' @return character vector of dataset_key values, possibly empty
+#' @export
+dataset_keys_for_species <- function(sp_labels) {
+  sci <- unique(vapply(sp_labels, extract_scientific_name, character(1)))
+  unique(d_taxa_ds$dataset_key[d_taxa_ds$scientific_name %in% sci])
+}
+
+#' Which dataset_key an environmental variable belongs to
+#'
+#' @param measurement_type a single `measurement_type` value (input$sel_env_var)
+#' @return character scalar dataset_key, or character(0) if unmatched
+#' @export
+dataset_key_for_env_var <- function(measurement_type) {
+  i <- match(measurement_type, d_env_vars$measurement_type)
+  if (is.na(i)) character(0) else d_env_vars$dataset_key[i]
 }
 
 
@@ -3509,6 +4215,16 @@ build_env_match_sql <- function(
 #' @export
 citation_md <- function(version, datasets = c("calcofi_bottle", "swfsc_ichthyo")) {
   page_url <- function(key) sprintf("https://calcofi.io/datasets/%s/", key)
+  # names the tool that produced this specific export, the way
+  # app.calcofi.io/station's own citations name that portal -- a query built
+  # here (this app's own species/filter selection) can't be reconstructed
+  # from the underlying dataset citations alone, only from the app + its URL
+  # (user question 2026-09-05: "should these citations also include the app
+  # it was downloaded from").
+  accessed_via <- c(
+    "## Accessed via", "",
+    sprintf("This export was produced by the CalCOFI Hexagon Explorer: %s", APP_CITE_URL),
+    "")
   if (!requireNamespace("calcofi4r", quietly = TRUE) ||
       utils::packageVersion("calcofi4r") < "1.19.0") {
     return(c(
@@ -3523,7 +4239,9 @@ citation_md <- function(version, datasets = c("calcofi_bottle", "swfsc_ichthyo")
       "",
       "(calcofi4r >= 1.19.0 is not installed here, so the formatted citation,",
       "licence and DOI from calcofi4r::cc_cite() are not available — the",
-      "dataset pages above carry them.)"))
+      "dataset pages above carry them.)",
+      "",
+      accessed_via))
   }
   lines <- calcofi4r::cc_cite(datasets, version = version, format = "text")
   c("# Citing this data",
@@ -3532,7 +4250,8 @@ citation_md <- function(version, datasets = c("calcofi_bottle", "swfsc_ichthyo")
     "",
     "## The integrated database", "", lines[1], "",
     unlist(lapply(seq_along(datasets), function(i)
-      c(sprintf("## %s", datasets[i]), "", lines[i + 1], ""))))
+      c(sprintf("## %s", datasets[i]), "", lines[i + 1], ""))),
+    accessed_via)
 }
 
 #' Render the REPRODUCE.md walk-through for a download bundle
@@ -3559,6 +4278,18 @@ reproduce_md <- function(manifest) {
     "| `data/original/env.csv` | `query/env.sql` | CTD-bottle environmental measurements |",
     "| `data/integrated/integrated_<method>.csv` | `query/integrated_<method>.sql` | bio matched to env in time + space |",
     "| `query/manifest.json` | — | release version, filters, row counts, md5 checksums |",
+    "",
+    "## Scope of `bio.csv`",
+    "",
+    paste(
+      "The biological query is **SWFSC ichthyoplankton** only, as a",
+      "standardized tally (count per 10 m^2: raw tally x std_haul_factor /",
+      "prop_sorted). Your taxa, quarters, date range and the \"include",
+      "taxonomic children\" setting are all applied to it. The app's",
+      "**Datasets** filter and its **Standardized as** unit pick are not --",
+      "they shape what the map and plots show, not this export. Read",
+      "`query/bio.sql` for the exact filter set; every other dataset in the",
+      "release is queryable the same way from the same public Parquet."),
     "",
     glue(
       "`<method>` is one of `nearest_time`, `nearest_dist`, `average` — how the ",
@@ -3644,7 +4375,7 @@ build_download_bundle <- function(zip_root, params, version = NULL) {
   sci_names        <- vapply(taxa, extract_scientific_name, character(1),
                              USE.NAMES = FALSE)
   include_children <- isTRUE(params$ck_children %||%
-                             params$include_children %||% TRUE)
+                             params$include_children %||% FALSE)
   qtr         <- params$sel_qtr %||% params$quarters %||% 1:4
   date_range  <- params$date_range
   depth_range <- params$depth_range %||% c(0, 5000)
@@ -3802,8 +4533,9 @@ build_download_bundle <- function(zip_root, params, version = NULL) {
 #'
 #' @param df_sp species table (lazy or collected) carrying `cpue_unit`,
 #'   `tow_type`, `std_haul_factor`
-#' @return a tibble with `cpue_unit`, `standardized` (logical), `n`, ordered by
-#'   `n` descending; zero rows if nothing is summarizable
+#' @return a tibble with ONE ROW PER `cpue_unit` -- `cpue_unit`,
+#'   `standardized` (logical; TRUE only when every row in that unit is), `n` --
+#'   ordered by `n` descending; zero rows if nothing is summarizable
 #' @export
 sp_unit_summary <- function(df_sp) {
   # WARN, never swallow. An earlier version returned an empty tibble on any
@@ -3821,7 +4553,21 @@ sp_unit_summary <- function(df_sp) {
       # volume for manta. One rule, one place.
       dplyr::mutate(standardized = as.logical(cpue_standardized)) |>
       dplyr::count(cpue_unit, standardized) |>
-      dplyr::collect(),
+      dplyr::collect() |>
+      # ONE ROW PER cpue_unit, which is what every caller assumes: both
+      # cpue_unit_selector_ui() (its `nrow(u) <= 1L` gate and its
+      # choiceValues) and sp_value_label() (`nrow(u) == 1L` vs. "(mixed
+      # units)") read nrow() as "how many units are present". count() keys on
+      # the (unit, flag) PAIR, so one unit carrying both cpue_standardized
+      # values -- reachable through prep_db.R's `ELSE COALESCE(mt.units,
+      # o.measurement_type)` fallback -- rendered a two-option radio whose
+      # second option was a silent no-op, under a "(mixed units)" legend for
+      # a single unit. all(), not any(): claim "effort-standardized" only
+      # when every row in that unit is.
+      dplyr::summarise(
+        standardized = all(standardized),
+        n            = sum(n),
+        .by          = cpue_unit),
     error = function(e) {
       warning("sp_unit_summary(): ", conditionMessage(e), call. = FALSE)
       NULL
@@ -3829,6 +4575,36 @@ sp_unit_summary <- function(df_sp) {
   if (is.null(out) || !nrow(out))
     return(tibble::tibble(cpue_unit = character(), standardized = logical(), n = integer()))
   dplyr::arrange(out, dplyr::desc(n))
+}
+
+#' Which dataset_key(s) actually back a species selection's CURRENT rows
+#'
+#' Unlike \code{\link{dataset_keys_for_species}} (a taxonomy-table lookup:
+#' every dataset a scientific name has EVER been recorded in, regardless of
+#' what's filtered), this reads the dataset_key(s) present in `df_sp` AFTER
+#' the Datasets filter and the "Standardized as" pick have both been
+#' applied. Sources & Citations, the map title's info popover, and "Cite
+#' this data" all used the taxonomy-table version, which is why picking
+#' e.g. "Pacific sardine -- CUFES Fish Eggs" showed citations for SWFSC:
+#' Ichthyoplankton too: sardine is also caught by that program's bongo nets,
+#' and the lookup does not know which of the picker's dataset GROUPS was
+#' actually chosen, or that the Datasets filter had narrowed the map to one
+#' of them. Reading `df_sp` instead answers "what is actually contributing
+#' to what's drawn right now" rather than "what has this taxon ever
+#' appeared in."
+#'
+#' @param df_sp species table (lazy or collected) carrying `dataset_key`
+#' @return character vector of dataset_key values, possibly empty
+#' @export
+sp_dataset_keys <- function(df_sp) {
+  out <- tryCatch(
+    df_sp |> dplyr::distinct(dataset_key) |> dplyr::collect(),
+    error = function(e) {
+      warning("sp_dataset_keys(): ", conditionMessage(e), call. = FALSE)
+      NULL
+    })
+  if (is.null(out) || !nrow(out)) return(character(0))
+  out$dataset_key
 }
 
 #' Legend title for a species layer, named by what the values actually are
@@ -3847,8 +4623,91 @@ sp_value_label <- function(u) {
   # e.g. count/10m2 and count/100m3 is not read as a single physical rate --
   # the sidebar note still carries the per-unit breakdown.
   if (!nrow(u))        return("Avg. abundance")
-  if (nrow(u) == 1L)   return(paste0("Avg. ", u$cpue_unit[1]))
+  if (nrow(u) == 1L)   return(paste0("Avg. ", fmt_cpue_unit(u$cpue_unit[1])))
   "Avg. abundance (mixed units)"
+}
+
+#' Keep only the rows in one `cpue_unit`
+#'
+#' The single choke point for the "Standardized as" pick (see
+#' \code{\link{cpue_unit_selector_ui}}): every map/plot consumer reads
+#' \code{rx$df_sp} AFTER this runs, so filtering here -- once, upstream of
+#' \code{\link{agg_sp_hex}}, \code{\link{prep_sp_poly}} and the time
+#' series/scatter/depth-profile aggregations -- is what keeps all of them
+#' from ever averaging across incompatible units again. Deliberately generic
+#' on the exact `cpue_unit` string (not a fixed "10m2/100m3/raw" scheme):
+#' which units exist is a property of the taxon/dataset, not something this
+#' app hard-codes -- ichthyoplankton happens to have three, ZooDB has three
+#' different ones (mgC/m2, count/m2, count/1000m3), a positive-only dataset
+#' may have just one.
+#'
+#' @param df_sp dbplyr lazy table or data.frame carrying `cpue_unit`
+#' @param unit the exact `cpue_unit` value to keep; NULL/NA is a no-op (used
+#'   when nothing has been chosen yet, or only one unit exists so there is
+#'   nothing to choose between)
+#' @export
+filter_cpue_unit <- function(df_sp, unit) {
+  if (is.null(unit) || is.na(unit)) return(df_sp)
+  df_sp |> dplyr::filter(cpue_unit == !!unit)
+}
+
+#' Format a `cpue_unit` string for display, with real unit exponents
+#'
+#' `cpue_unit` values are stored/compared as plain ASCII ("count/10m2",
+#' "count/100m3", "mgC/m2") because \code{\link{filter_cpue_unit}} tests them
+#' for equality and widgets use them as `value`s -- a unicode superscript
+#' would just be one more way for two written forms of "the same" value to
+#' fail to match. This is the one place that ASCII form becomes what a
+#' person reads: m2 -> m², m3 -> m³, wherever the app NAMES a
+#' `cpue_unit` (radio labels, the hexagon/polygon unit note, tooltips)
+#' rather than storing or testing it.
+#'
+#' @param unit character vector of `cpue_unit` values (NA passes through)
+#' @return character vector, same length, with m2/m3 superscripted
+#' @export
+fmt_cpue_unit <- function(unit) {
+  unit <- gsub("m3", "m³", unit, fixed = TRUE)
+  gsub("m2", "m²", unit, fixed = TRUE)
+}
+
+#' "Standardized as" control: one radio button per `cpue_unit` actually
+#' present in the current selection
+#'
+#' Mirrors the CalCOFI Explorer's denominator picker (per 10 m^2 / per 100
+#' m^3 / raw count for ichthyoplankton) but reads the choices from the data
+#' rather than hard-coding them, so it degrades correctly for every other
+#' dataset's own units (ZooDB's mgC/m2 + count/m2 + count/1000m3; a
+#' single-unit dataset skips the control entirely -- there is nothing to
+#' pick between, and \code{\link{sp_value_label}}/the poly note already say
+#' what the one unit is).
+#'
+#' @param u a \code{\link{sp_unit_summary}} tibble (`cpue_unit`,
+#'   `standardized`, `n`), already ordered by `n` descending
+#' @param chosen the `cpue_unit` currently in effect (radio `selected`)
+#' @return a `radioButtons` tag, or NULL when there is nothing to choose
+#'   between (0 or 1 units present)
+#' @export
+cpue_unit_selector_ui <- function(u, chosen) {
+  if (is.null(u) || nrow(u) <= 1L) return(NULL)
+  n_tot <- sum(u$n)
+  radioButtons(
+    "sel_cpue_unit",
+    tagList(
+      "Standardized as",
+      popover(
+        bs_icon("question-circle"),
+        HTML("This selection is published in more than one unit -- pick the
+              one to map. The others are excluded from what's shown, not
+              merged into it: a mean taken across units is not a quantity."))),
+    choiceNames = lapply(seq_len(nrow(u)), function(i) tagList(
+      tags$strong(fmt_cpue_unit(u$cpue_unit[i])),
+      sprintf(" — %s obs (%.0f%%)",
+              format(u$n[i], big.mark = ","), 100 * u$n[i] / n_tot),
+      if (isTRUE(u$standardized[i]))
+        tags$span(class = "cc-unit-std", " effort-standardized"))),
+    choiceValues = u$cpue_unit,
+    selected     = chosen,
+    width        = "100%")
 }
 
 # ---- ?datasets= : the taxa-dataset selection carried in the URL --------------
