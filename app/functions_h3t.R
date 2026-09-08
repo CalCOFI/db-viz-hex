@@ -62,9 +62,23 @@ sample_spatial_clause <- function(spatial_layer, spatial_names, sample_key_col) 
 #' Filtering on exactly what `get_sp()` filtered on makes map and tables agree
 #' by construction. Since both now filter `taxon_key`, there is one key space
 #' rather than a worms_id set plus a scientific_name set to keep in agreement.
+#'
+#' \code{cpue_unit}, added 2026-09-08, is the "Standardized as" pick
+#' (\code{rx$cpue_chosen}). Before this parameter existed, this SQL had no
+#' idea the control existed at all -- it always averaged \code{std_tally}
+#' across every \code{cpue_unit} present for the taxon, so switching
+#' "Standardized as" relabeled the legend (a separate, correctly-reactive
+#' piece of UI) while the tiles themselves, and the color scale built from
+#' them, never changed at all (bug report 2026-09-08: "why does nothing
+#' change visually when you change standardized as"). The classic/non-h3t
+#' path never had this bug -- it filters via \code{filter_cpue_unit(df_sp,
+#' cpue_chosen)} in server.R before ever reaching a map builder -- only the
+#' h3t path re-queries independently of \code{df_sp} and so needs its own
+#' filter here.
 build_sp_sql <- function(taxon_keys, qtr, date_range,
                          datasets = NULL, poly_wkt = NULL,
-                         spatial_layer = NULL, spatial_names = NULL) {
+                         spatial_layer = NULL, spatial_names = NULL,
+                         cpue_unit = NULL) {
   taxa <- if (length(taxon_keys) > 0) {
     glue::glue_sql("taxon_key IN ({taxon_keys*})", .con = DBI::ANSI())
   } else {
@@ -81,6 +95,8 @@ build_sp_sql <- function(taxon_keys, qtr, date_range,
       .con = DBI::ANSI())),
     if (!is.null(datasets) && length(datasets) > 0)
       as.character(glue::glue_sql("dataset_key IN ({datasets*})", .con = DBI::ANSI())),
+    if (!is.null(cpue_unit) && !is.na(cpue_unit))
+      as.character(glue::glue_sql("cpue_unit = {cpue_unit}", .con = DBI::ANSI())),
     as.character(poly_clause(poly_wkt, "longitude", "latitude")),
     as.character(sample_spatial_clause(spatial_layer, spatial_names, "sample_key")))
 
@@ -194,13 +210,75 @@ build_h3t_scale <- function(stats, palette = \(n) hcl.colors(n, "Viridis"),
 
 # ------------------------------------------------------------- map builders
 
-map_sp_h3t <- function(tile_url, scale, bbox = c(-125, 30, -115, 38),
-                       is_dark = TRUE) {
+# Default startup extent (2026-09-08 root-cause, after 3 wrong guesses via
+# fit_bounds(bbox=...)): fit_bounds() has to ask "what zoom makes this
+# lon/lat box exactly fill the map panel", and the map panel's actual pixel
+# size depends on the browser window, whether the sidebar is open, the
+# monitor -- so the SAME bbox can fit to a DIFFERENT zoom on a different
+# screen ("does it depend on screensize" -- yes, this is exactly why: three
+# different bboxes were tried here and none reliably landed on "100 km").
+# The scale bar itself, though, only depends on ZOOM and LATITUDE, not on
+# screen/container size at all (it measures the ground distance spanned by
+# a fixed 100px reference at the map's current center) -- so pin the zoom
+# directly instead of reverse-engineering a bbox that happens to fit to the
+# right zoom on one particular screen. mapgl's scale control snaps to a
+# "nice number" ladder (50/100/200/...) and reads "100" for any raw value
+# in [100, 200) km.
+#
+# Two things went into this number, not one -- the first pass (zoom 6.53)
+# used ONLY the first and still came back "50", one bucket too low:
+#   1. The standard Web Mercator meters-per-pixel formula (256px tiles):
+#      156543.03392 * cos(lat) / 2^zoom. Solved for a target of 140 km --
+#      the geometric center of the "100" bucket, for margin against either
+#      edge -- this alone gives zoom 6.53.
+#   2. Mapbox GL / MapLibre GL JS use a 512px internal tile size, and their
+#      public `zoom` is consequently ONE LESS than the "standard" 256px
+#      zoom for the same visual scale (confirmed against a real MapLibre
+#      session, 2026-09-08 -- zoom 6.53 read "50", not "100"; also a long-
+#      documented mapbox-gl-js quirk, e.g. github.com/mapbox/mapbox-gl-js
+#      issues #685 and #4837: "zoom levels reported in GL are 1 less than
+#      the same data source rendered as raster tiles"). So the zoom actually
+#      passed to maplibre() needs to be 1 LOWER than the standard-formula
+#      answer: 6.53 - 1 = 5.53.
+# This is a hardcoded ZOOM, so unlike a bbox it reads the same "100 km" on
+# every screen size, every time -- it does not depend on the browser
+# window, sidebar state, or monitor.
+DEFAULT_MAP_CENTER <- c(-120, 34)  # CalCOFI core grid: Pt. Conception to San Diego
+DEFAULT_MAP_ZOOM   <- 5.53
+
+#' @param view optional list(center = c(lon, lat), zoom = n) -- the LAST
+#'   KNOWN view from the client (server.R caches every map_before_view
+#'   moveend into rx$last_map_view). When present, the widget is constructed
+#'   AT that exact view, so a full widget rebuild (env stat, dark mode,
+#'   dataset/species change, ...) no longer snaps the map back to the
+#'   default extent out from under a user who has already panned or zoomed
+#'   (bug report 2026-09-07: "when togling env summary statistics the map
+#'   view goes to 50km. i want the default to be 100km until someone pans
+#'   in or out" -- every rebuild WAS unconditionally re-fitting to the
+#'   default). DEFAULT_MAP_CENTER/DEFAULT_MAP_ZOOM are the first-load-only
+#'   fallback, for when no view has been recorded yet.
+#'
+#'   Either way, a real \code{jump_to()} call (not just the constructor's
+#'   center=/zoom=, which is silent) is what fires the client's first
+#'   \code{moveend} -- see DEFAULT_MAP_ZOOM's own comment for why this uses
+#'   jump_to() to a fixed zoom rather than fit_bounds() to a bbox.
+map_sp_h3t <- function(tile_url, scale, view = NULL, is_dark = TRUE) {
+  has_view <- !is.null(view) && !is.null(view$center) && !is.null(view$zoom) &&
+    length(view$center) == 2 && all(is.finite(unlist(view$center))) &&
+    is.finite(view$zoom)
+
+  ctr  <- if (has_view) view$center else DEFAULT_MAP_CENTER
+  zm   <- if (has_view) view$zoom   else DEFAULT_MAP_ZOOM
+
   m <- mapgl::maplibre(
-    style = mapgl::carto_style(ifelse(is_dark, "dark-matter", "voyager")),
-    center = c(mean(bbox[c(1,3)]), mean(bbox[c(2,4)])), zoom = 5
-  ) |>
-    mapgl::fit_bounds(bbox = bbox) |>
+      style  = mapgl::carto_style(ifelse(is_dark, "dark-matter", "voyager")),
+      center = ctr, zoom = zm) |>
+    # jump_to() to the SAME center/zoom we just constructed with: a no-op on
+    # the displayed view, but it's what actually fires the moveend that
+    # populates rx$last_map_view (see the param doc above) -- construction
+    # alone does not.
+    mapgl::jump_to(center = ctr, zoom = zm)
+  m <- m |>
     mapgl::add_scale_control(position = "top-left", unit = "metric") |>
     mapgl::add_navigation_control()
 
@@ -231,13 +309,26 @@ map_sp_h3t <- function(tile_url, scale, bbox = c(-125, 30, -115, 38),
   )
 }
 
+# view: see map_sp_h3t()'s doc -- identical "don't refit over a user's pan/
+# zoom on rebuild" fix, applied here too since output$map rebuilds THIS
+# widget fresh on every env-stat change (that path is exactly what the "goes
+# to 50km" bug report was about), and the same jump_to()-to-a-fixed-zoom
+# fallback (DEFAULT_MAP_CENTER/DEFAULT_MAP_ZOOM) for a screen-size-proof
+# "100 km" default on first load.
 map_env_h3t <- function(tile_url, scale, env_stat_label, env_var_label,
-                        bbox = c(-125, 30, -115, 38), is_dark = TRUE) {
+                        view = NULL, is_dark = TRUE) {
+  has_view <- !is.null(view) && !is.null(view$center) && !is.null(view$zoom) &&
+    length(view$center) == 2 && all(is.finite(unlist(view$center))) &&
+    is.finite(view$zoom)
+
+  ctr <- if (has_view) view$center else DEFAULT_MAP_CENTER
+  zm  <- if (has_view) view$zoom   else DEFAULT_MAP_ZOOM
+
   m <- mapgl::maplibre(
-    style = mapgl::carto_style(ifelse(is_dark, "dark-matter", "voyager")),
-    center = c(mean(bbox[c(1,3)]), mean(bbox[c(2,4)])), zoom = 5
-  ) |>
-    mapgl::fit_bounds(bbox = bbox) |>
+      style  = mapgl::carto_style(ifelse(is_dark, "dark-matter", "voyager")),
+      center = ctr, zoom = zm) |>
+    mapgl::jump_to(center = ctr, zoom = zm)
+  m <- m |>
     mapgl::add_scale_control(position = "top-left", unit = "metric") |>
     mapgl::add_navigation_control()
 
