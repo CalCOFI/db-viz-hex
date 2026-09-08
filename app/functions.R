@@ -3281,7 +3281,7 @@ attribution_table_html <- function() {
       open = NA,
       tags$summary(
         div(class = "cc-attrib-main",
-            span(class = "cc-attrib-name", dataset_label(key)),
+            span(class = "cc-attrib-name", dataset_full_label(key)),
             if (multi) span(class = "cc-attrib-comp-count",
                              sprintf("%d sources", nrow(g)))),
         div(class = "cc-attrib-provider",
@@ -3378,6 +3378,31 @@ attrib_provider_summary <- function(keys) {
   vals
 }
 
+#' The curated "<Abbrev>: <description>" label, NA-safe
+#'
+#' What `DATASET_LABELS[[key]]` used to be at the three call sites that want
+#' the prefixed form (the Data Sources page, the cite modal, and
+#' \code{\link{dataset_short_label}}, which strips the prefix back off). Same
+#' string as before for every key the curated map lists -- the point is only
+#' the fallback: `[[` on a named atomic vector with a missing name throws
+#' "subscript out of bounds" BEFORE `%||%` can supply a default, so a
+#' dataset_key measured live off bio_obs or read from attributions.csv but
+#' absent from the map errored the page instead of naming itself.
+#'
+#' Single-bracket indexing yields NA there, and global.R::dataset_label()
+#' takes over: the release's own `dataset_name_short`, then its formal
+#' `dataset_name`, then the raw key. The curated map stays FIRST here on
+#' purpose -- these three spots show the "SWFSC: "/"CalCOFI: " prefix, which
+#' the release's short form does not carry.
+#'
+#' @param key single dataset_key
+#' @return character(1)
+#' @export
+dataset_full_label <- function(key) {
+  lbl <- unname(DATASET_LABELS[key])
+  if (is.na(lbl) || !nzchar(lbl)) dataset_label(key) else lbl
+}
+
 #' Strip DATASET_LABELS' institution-abbreviation prefix ("SWFSC: ", "CalCOFI: ")
 #'
 #' Every DATASET_LABELS value follows "<Abbrev>: <description>" so the search
@@ -3388,22 +3413,19 @@ attrib_provider_summary <- function(keys) {
 #' "the program prefix should be removed because it is just repeated on
 #' bottom"). Falls back to the full label if it doesn't match that shape.
 #'
-#' Goes through global.R::dataset_label() rather than DATASET_LABELS directly.
-#' DATASET_LABELS is the third of four fallbacks there, not the authority, and
-#' the keys reaching this function are measured live off bio_obs
-#' (dataset_list_picker_ui()) or read from attributions.csv -- either can name
-#' a dataset the curated map has never heard of. `DATASET_LABELS[[key]] %||%
-#' key` could not fall back at all: `[[` on a named atomic vector with a
-#' missing name throws "subscript out of bounds" BEFORE `%||%` is reached, so
-#' a newly ingested dataset errored the filter picker instead of showing its
-#' raw key. dataset_label() is NA-safe by construction and ends on that same
-#' raw key.
+#' Reads the label through \code{\link{dataset_full_label}} rather than
+#' `DATASET_LABELS[[key]] %||% key`, which could not fall back at all: `[[` on
+#' a named atomic vector with a missing name throws "subscript out of bounds"
+#' BEFORE `%||%` is reached. The keys reaching this function are measured live
+#' off bio_obs (dataset_list_picker_ui()), so a newly ingested dataset errored
+#' the filter picker instead of showing its raw key. Same string as before for
+#' every key the curated map lists.
 #'
 #' @param key single dataset_key
 #' @return character(1)
 #' @export
 dataset_short_label <- function(key) {
-  lbl <- dataset_label(key)
+  lbl <- dataset_full_label(key)
   sub("^[^:]+:\\s*", "", lbl)
 }
 
@@ -3588,7 +3610,7 @@ attrib_citation_html <- function(keys) {
       entries[[length(entries) + 1]] <- div(
         class = "cc-cite-entry",
         div(class = "cc-cite-entry-top",
-            span(class = "cc-cite-entry-name", dataset_label(k)),
+            span(class = "cc-cite-entry-name", dataset_full_label(k)),
             div(class = "cc-cite-actions",
                 citation_source_link(cite_text, d$source_url), cc_copy_button(cite_text))),
         div(class = "cc-cite-mono", citation_text_html(cite_text)),
@@ -3607,7 +3629,7 @@ attrib_citation_html <- function(keys) {
       entries[[length(entries) + 1]] <- div(
         class = "cc-cite-entry cc-cite-group",
         div(class = "cc-cite-entry-name cc-cite-group-name",
-            dataset_label(k),
+            dataset_full_label(k),
             span(class = "cc-attrib-comp-count", sprintf("%d sources", nrow(g)))),
         tagList(comps),
         if (has_val(shared)) license_disclaimer_block(shared))

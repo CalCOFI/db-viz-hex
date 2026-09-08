@@ -41,6 +41,7 @@ take("^summarize_institutions <- function")
 take("^summarize_programs <- function")
 take("^strip_license_annotation <- function")
 take("^sp_unit_summary <- function")
+take("^dataset_full_label <- function")
 take("^dataset_short_label <- function")
 take("^fmt_cpue_unit <- function")
 take("^sp_value_label <- function")
@@ -100,10 +101,26 @@ dataset_label  <- function(key) {
   lbl <- unname(DATASET_LABELS[key])
   ifelse(is.na(lbl) | lbl == "", key, lbl)
 }
-ok("label: a known key loses its institution prefix",
+# the curated map stays FIRST for the prefixed spots. The release's own
+# dataset_name_short does NOT carry the "SWFSC: "/"CalCOFI: " prefix, so
+# reading these through dataset_label() instead silently renamed all 15 rows
+# of the Data Sources page and the cite modal ("CalCOFI: Bottle" ->
+# "Hydrographic Bottle") while fixing the error. Same string as before is the
+# requirement; only the fallback changed.
+ok("label: a known key keeps its curated prefixed form",
+   dataset_full_label("swfsc_ichthyo"), "SWFSC: Ichthyoplankton")
+ok("label: a known key loses its institution prefix in the short form",
    dataset_short_label("swfsc_ichthyo"), "Ichthyoplankton")
-ok("label: a newly ingested key falls back to itself instead of erroring",
+ok("label: a newly ingested key falls back through dataset_label(), not an error",
+   dataset_full_label("newprovider_newdataset"), "newprovider_newdataset")
+ok("label: ... and the short form leaves a prefix-less fallback alone",
    dataset_short_label("newprovider_newdataset"), "newprovider_newdataset")
+# the release short form is what dataset_label() supplies when the curated map
+# has no row -- a new dataset names itself without anyone editing DATASET_LABELS
+d_release_named <- "otherprovider_otherdataset"
+dataset_label <- function(key) ifelse(key == d_release_named, "Some New Survey", key)
+ok("label: an unlisted key takes the release's own short name",
+   dataset_full_label(d_release_named), "Some New Survey")
 
 # ---- sp_unit_summary(): one row per cpue_unit ------------------------------
 # both flags on ONE unit — prep_db.R's `ELSE COALESCE(mt.units, ...)` fallback
