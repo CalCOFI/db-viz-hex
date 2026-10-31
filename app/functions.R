@@ -1197,9 +1197,16 @@ prep_splot <- function(df_sp, df_env, env_stat, method = "nearest_time",
         d_env,
         # join species to env observations within desired time interval
         by = join_by(between(sp_dtime, env_dtime_lwr, env_dtime_upr))) |>
-      # compute distance between species and ocean observations
+      # compute distance between species and ocean observations: haversine in
+      # metres, as calcofi4r::cc_distance_km_sql() (>= 1.29.0) writes it.
+      # ST_Distance_Sphere(ST_Point(lon, lat)) read the points as [lat, lon] on
+      # DuckDB 1.x (1 degree of latitude = 55.6 km) and errors on DuckDB 2.0
       mutate(
-        dist_m = sql("ST_Distance_Sphere(ST_Point(sp_lon, sp_lat), ST_Point(env_lon, env_lat))")) |>
+        dist_m = sql(paste0(
+          "2 * 6371008.8 * asin(sqrt(",
+          "pow(sin(radians(env_lat - sp_lat) / 2), 2) + ",
+          "cos(radians(sp_lat)) * cos(radians(env_lat)) * ",
+          "pow(sin(radians(env_lon - sp_lon) / 2), 2)))"))) |>
       # get pairs within desired distance
       filter(
         dist_m <= max_meters_diff)
